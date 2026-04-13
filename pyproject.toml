@@ -1,0 +1,54 @@
+[project]
+name = "home_cctv"
+version = "0.1.0"
+description = "Local-only AI event pipeline over 4 RTSP streams (CPU-only, Windows+WSL2)"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "opencv-python-headless==4.10.0.84",
+  "numpy==1.26.4",
+  "python-dotenv==1.2.2",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.6,<3",
+  "pyyaml>=6,<7",
+  "ultralytics==8.4.37",
+  "openvino==2026.1.0",
+  "onnxruntime==1.24.4",
+  "lap==0.5.13",
+  "scipy>=1.13,<2",
+  "torch==2.5.1+cpu",
+  "easyocr==1.7.2",
+  "tensorflow-cpu==2.16.2",
+  "tf-keras==2.16.0",
+  "deepface==0.0.99",
+  "shapely>=2.0,<3",
+  "psutil>=6,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-json-report>=1.5,<2",
+  "ruff>=0.7,<1",
+  "mypy>=1.13,<2",
+]
+
+[project.scripts]
+home_cctv = "home_cctv.__main__:main"
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/home_cctv"]
