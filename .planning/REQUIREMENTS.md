@@ -133,8 +133,68 @@ Kept here to prevent re-adding. See PROJECT.md → "Out of Scope" for full ratio
 
 ## Traceability
 
-*Filled in by the roadmapper. Each REQ-ID maps to exactly one phase.*
+*Every v1 REQ-ID maps to exactly one phase. Populated by gsd-roadmapper 2026-04-13.*
 
-| REQ-ID | Phase |
-|---|---|
-| *(populated by gsd-roadmapper)* | — |
+| REQ-ID | Phase | Phase Name |
+|---|---|---|
+| ENV-01 | 0 | Environment & Sanity |
+| ENV-02 | 0 | Environment & Sanity |
+| ENV-03 | 0 | Environment & Sanity |
+| ENV-04 | 0 | Environment & Sanity |
+| ENV-05 | 0 | Environment & Sanity |
+| ING-01 | 1 | Multi-Stream Ingest & Reconnect |
+| ING-02 | 1 | Multi-Stream Ingest & Reconnect |
+| ING-03 | 1 | Multi-Stream Ingest & Reconnect |
+| ING-04 | 1 | Multi-Stream Ingest & Reconnect |
+| ING-05 | 1 | Multi-Stream Ingest & Reconnect |
+| ING-06 | 0 | Environment & Sanity |
+| ING-07 | 1 | Multi-Stream Ingest & Reconnect |
+| ING-08 | 1 | Multi-Stream Ingest & Reconnect |
+| TRK-01 | 2 | Detection, Tracking & Zoned Events |
+| TRK-02 | 2 | Detection, Tracking & Zoned Events |
+| TRK-03 | 2 | Detection, Tracking & Zoned Events |
+| TRK-04 | 2 | Detection, Tracking & Zoned Events |
+| TRK-05 | 2 | Detection, Tracking & Zoned Events |
+| TRK-06 | 2 | Detection, Tracking & Zoned Events |
+| TRK-07 | 2 | Detection, Tracking & Zoned Events |
+| TRK-08 | 2 | Detection, Tracking & Zoned Events |
+| TRK-09 | 2 | Detection, Tracking & Zoned Events |
+| ZON-01 | 2 | Detection, Tracking & Zoned Events |
+| ZON-02 | 2 | Detection, Tracking & Zoned Events |
+| ZON-03 | 2 | Detection, Tracking & Zoned Events |
+| ZON-04 | 2 | Detection, Tracking & Zoned Events |
+| TRG-01 | 3 | Trigger & Catch Event Models |
+| TRG-02 | 3 | Trigger & Catch Event Models |
+| TRG-03 | 3 | Trigger & Catch Event Models |
+| TRG-04 | 3 | Trigger & Catch Event Models |
+| TRG-05 | 3 | Trigger & Catch Event Models |
+| TRG-06 | 3 | Trigger & Catch Event Models |
+| TRG-07 | 3 | Trigger & Catch Event Models |
+| FAC-01 | 3 | Trigger & Catch Event Models |
+| FAC-02 | 3 | Trigger & Catch Event Models |
+| FAC-03 | 3 | Trigger & Catch Event Models |
+| FAC-04 | 3 | Trigger & Catch Event Models |
+| FAC-05 | 3 | Trigger & Catch Event Models |
+| FAC-06 | 3 | Trigger & Catch Event Models |
+| FAC-07 | 3 | Trigger & Catch Event Models |
+| ALP-01 | 3 | Trigger & Catch Event Models |
+| ALP-02 | 3 | Trigger & Catch Event Models |
+| ALP-03 | 3 | Trigger & Catch Event Models |
+| ALP-04 | 3 | Trigger & Catch Event Models |
+| ALP-05 | 3 | Trigger & Catch Event Models |
+| STO-01 | 2 | Detection, Tracking & Zoned Events |
+| STO-02 | 2 | Detection, Tracking & Zoned Events |
+| STO-03 | 2 | Detection, Tracking & Zoned Events |
+| STO-04 | 2 | Detection, Tracking & Zoned Events |
+| STO-05 | 2 | Detection, Tracking & Zoned Events |
+| STO-06 | 2 | Detection, Tracking & Zoned Events |
+| STO-07 | 2 | Detection, Tracking & Zoned Events |
+| STO-08 | 4 | Hardening & Operations |
+| STO-09 | 4 | Hardening & Operations |
+| OPS-01 | 1 | Multi-Stream Ingest & Reconnect |
+| OPS-02 | 4 | Hardening & Operations |
+| OPS-03 | 4 | Hardening & Operations |
+| OPS-04 | 4 | Hardening & Operations |
+| OPS-05 | 4 | Hardening & Operations |
+
+**Coverage:** 59 / 59 v1 requirements mapped. No orphans, no duplicates.
