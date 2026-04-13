@@ -21,6 +21,10 @@ OPENCV_FFMPEG_OPTIONS_STRING: str = (
     "|probesize;2000000"
 )
 
+# Backwards-compat alias (external tooling / orchestrator success checks
+# expect this shorter name).
+CAPTURE_OPTIONS: str = OPENCV_FFMPEG_OPTIONS_STRING
+
 _ENV_KEY = "OPENCV_FFMPEG_CAPTURE_OPTIONS"
 
 
