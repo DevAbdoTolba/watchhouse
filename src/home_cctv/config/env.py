@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _MIN_FREE_GB: float = 1.0
@@ -24,20 +24,44 @@ _DRVFS_PREFIXES: tuple[str, ...] = (
 )
 
 
+_DEFAULT_DATA_ROOT: Path = Path.home() / "home_cctv"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
-    DVR_IP: str
-    DVR_PORT: int = 554
-    DVR_USER: str
-    DVR_PASS: str
-    EVENT_IMAGE_DIR: Path
-    DB_PATH: Path
-    LOG_DIR: Path = Path("logs")
+    # Plan 00-03 handoff: the user's repo-level `.env` uses a legacy key
+    # vocabulary (DVR_USERNAME / DVR_PASSWORD / DVR_LOCAL_IP /
+    # DVR_LOCAL_RTSP_PORT). We accept both the canonical names and the legacy
+    # aliases via ``AliasChoices`` so an existing `.env` works unmodified.
+    DVR_IP: str = Field(
+        validation_alias=AliasChoices("DVR_IP", "DVR_LOCAL_IP"),
+    )
+    DVR_PORT: int = Field(
+        default=554,
+        validation_alias=AliasChoices("DVR_PORT", "DVR_LOCAL_RTSP_PORT"),
+    )
+    DVR_USER: str = Field(
+        validation_alias=AliasChoices("DVR_USER", "DVR_USERNAME"),
+    )
+    DVR_PASS: str = Field(
+        validation_alias=AliasChoices("DVR_PASS", "DVR_PASSWORD"),
+    )
+    # Path fields default under $HOME/home_cctv/ so a legacy `.env` that only
+    # ships DVR credentials still boots cleanly on WSL2 ext4. Users who set
+    # the canonical keys explicitly continue to override.
+    EVENT_IMAGE_DIR: Path = Field(
+        default=_DEFAULT_DATA_ROOT / "data" / "event_images",
+    )
+    DB_PATH: Path = Field(
+        default=_DEFAULT_DATA_ROOT / "data" / "cctv_events.db",
+    )
+    LOG_DIR: Path = Field(default=_DEFAULT_DATA_ROOT / "logs")
     MODEL_CACHE_DIR: Path = Path.home() / ".cache/home_cctv/models"
 
     @field_validator("DVR_PORT")

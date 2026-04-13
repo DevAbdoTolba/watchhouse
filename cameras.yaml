@@ -1,0 +1,62 @@
+# home_cctv cameras.yaml — committed Phase 0 artifact, consumed by Phase 1+
+# Ground truth: cameras.txt + terminal.txt
+dvr:
+  host_env: DVR_IP
+  port_env: DVR_PORT
+  user_env: DVR_USER
+  pass_env: DVR_PASS
+  vendor: "Cantonk/HeroSpeed OEM (BitVision ecosystem)"
+cameras:
+  - id: 1
+    name: exterior_red
+    location: "upper-right corner, front facade"
+    coverage: "right-to-left approach along front"
+    sub_path: "/1"
+    main_path: "/0"
+    codec: hevc
+    native_fps: 25
+    native_width: 1280
+    native_height: 720
+    audio_multiplex: true
+    notes: "Channel 01, AHD 720P25, H.265"
+  - id: 2
+    name: interior_orange
+    location: "above primary entrance door"
+    coverage: "staircase + central floor"
+    sub_path: "/11"
+    main_path: "/10"
+    codec: hevc
+    native_fps: 12
+    native_width: 1920
+    native_height: 1080
+    sensor_native: "5MP"
+    audio_multiplex: true
+    notes: "Channel 02, AHD 5MP12 downscaled 1080p, H.265"
+  - id: 3
+    name: exterior_blue
+    location: "upper-left corner, front facade"
+    coverage: "left-to-right approach along front"
+    sub_path: "/21"
+    main_path: "/20"
+    codec: hevc
+    native_fps: 12
+    native_width: 1920
+    native_height: 1080
+    sensor_native: "5MP"
+    audio_multiplex: false
+    nal_unit_0_workaround_required: true
+    notes: "Channel 03, AHD 5MP12 downscaled 1080p, H.265 V-only. Orphaned audio NAL header — requires +discardcorrupt mandatory."
+  - id: 4
+    name: interior_green
+    location: "above staircase landing"
+    coverage: "rear-to-front view of primary entrance"
+    sub_path: "/31"
+    main_path: "/30"
+    codec: hevc
+    native_fps: 25
+    native_width: 1280
+    native_height: 720
+    audio_multiplex: false
+    nal_unit_0_workaround_required: true
+    known_hazard: "exterior-door backlight blowout during day; silhouetting at night"
+    notes: "Channel 04, AHD 720P25, H.265 V-only. Same NAL workaround as Cam 3."
