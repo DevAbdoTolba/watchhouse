@@ -1,5 +1,6 @@
 {
   "_note": "Weight bundle manifest. Populated by phase0.model_bundle.download_model_bundle() -> persist_weights_lock() on first successful run. Commit after first pass so subsequent startups verify cache integrity. The `cold_start_ms` block is also filled in by the same call, via warmup_model_bundle().",
+  "pending_download": true,
   "cache_root": "$HOME/.cache/home_cctv/models",
   "weights": {
     "yolo26n.pt": { "size_bytes": 0, "verified": false },

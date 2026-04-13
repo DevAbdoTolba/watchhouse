@@ -65,9 +65,19 @@ def main(argv: list[str] | None = None) -> int:
     install_signal_handlers(supervisor)
 
     if args.phase0:
-        # Full Phase 0 measurement harness ships in Plan 00-03.
-        logger.info("phase0_harness_not_yet_implemented deferred_to=plan-00-03")
-        return 0
+        from home_cctv.phase0.sanity import PHASE0_DURATION_SEC, run_phase0
+
+        duration_sec = 5 if args.mp4 else PHASE0_DURATION_SEC
+        report = run_phase0(
+            settings,
+            mp4_override=args.mp4,
+            duration_sec=duration_sec,
+            show=args.show,
+            skip_model_bundle=bool(args.mp4),
+            skip_network_probe=bool(args.mp4),
+            report_path=None,
+        )
+        return 0 if report.phase0_verdict == "pass" else 1
 
     if args.mp4 is None:
         logger.info("no_work_to_do hint='pass --mp4 PATH or --phase0'")

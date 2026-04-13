@@ -52,3 +52,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/home_cctv"]
+
+[tool.pytest.ini_options]
+markers = [
+  "slow: marks tests as slow (network download, live DVR); deselect with -m 'not slow'",
+]
+addopts = "-m 'not slow'"
