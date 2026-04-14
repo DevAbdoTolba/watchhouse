@@ -28,6 +28,9 @@
 - [ ] **ING-06**: User can run the same pipeline against an offline MP4 file instead of RTSP for regression testing (`--mp4 path/to/file.mp4`)
 - [ ] **ING-07**: User's main-stream captures are opened on demand for a single frame on trigger, then released — never held open continuously — with a short (~2 s) TTL cache for burst triggers on the same camera
 - [ ] **ING-08**: User's concurrent main-stream opens are serialized via a single global semaphore so DVR connection caps are not exceeded
+- [ ] **ING-09**: User can ingest a recorded video via `--ingest-file PATH` and have the resulting events **merged into the main `EventLog`** using timestamps derived from the video itself (priority order: burned-in camera-clock overlay OCR → file mtime → filename timestamp parse → hard error if none usable). This is distinct from `ING-06`'s `--mp4` which is a dev/regression mode that writes to a dry-run report.
+- [ ] **ING-10**: User can analyze a recorded video via `--analyze-file PATH --isolated` and have the resulting events written to a **sandbox partition** (`session_id`-tagged rows in `EventLog` OR a separate `EventLog_sandbox` table, configurable), so the main event log stays clean. Default mode when `--analyze-file` is used without `--isolated` is merge mode (ING-09).
+- [ ] **ING-11**: When `--ingest-file` merge mode would insert an event that collides with an existing event within `(camera_id, event_type, entity_id, ±N seconds)` (default `N=5`, configurable), the pipeline deduplicates instead of inserting — keeping the existing row, logging a `Merge_Dedup_Skipped` counter bump, and attaching the video-derived `image_path` only if the existing row has none.
 
 ### Detection & Tracking (TRK)
 
@@ -87,6 +90,7 @@
 - [ ] **STO-07**: User's pipeline writes event images atomically (write to `.tmp`, rename, then insert DB row) so the DB is never out of sync with the filesystem
 - [ ] **STO-08**: User's pipeline enforces a snapshot retention policy (age + size cap) that prunes the oldest non-protected events first — `Face_Recognized` and `Plate_Read` events are protected from cleanup
 - [ ] **STO-09**: User's pipeline enters "emergency mode" on disk-full (keep writing DB rows, skip images, emit one `Storage_Full` event per minute)
+- [ ] **STO-10**: User's event writer uses a `TimeSource` abstraction (`LiveTimeSource` → `datetime.utcnow()`; `FileTimeSource` → video-derived wall time). No direct `utcnow()` or `datetime.now()` calls anywhere in the event-write path. `TimeSource` is injected at pipeline construction based on the run mode (live RTSP → `LiveTimeSource`; `--ingest-file` / `--analyze-file` → `FileTimeSource`).
 
 ### Operations (OPS)
 
@@ -150,6 +154,9 @@ Kept here to prevent re-adding. See PROJECT.md → "Out of Scope" for full ratio
 | ING-06 | 0 | Environment & Sanity |
 | ING-07 | 1 | Multi-Stream Ingest & Reconnect |
 | ING-08 | 1 | Multi-Stream Ingest & Reconnect |
+| ING-09 | 2 | Detection, Tracking & Zoned Events |
+| ING-10 | 2 | Detection, Tracking & Zoned Events |
+| ING-11 | 2 | Detection, Tracking & Zoned Events |
 | TRK-01 | 2 | Detection, Tracking & Zoned Events |
 | TRK-02 | 2 | Detection, Tracking & Zoned Events |
 | TRK-03 | 2 | Detection, Tracking & Zoned Events |
@@ -191,10 +198,13 @@ Kept here to prevent re-adding. See PROJECT.md → "Out of Scope" for full ratio
 | STO-07 | 2 | Detection, Tracking & Zoned Events |
 | STO-08 | 4 | Hardening & Operations |
 | STO-09 | 4 | Hardening & Operations |
+| STO-10 | 2 | Detection, Tracking & Zoned Events |
 | OPS-01 | 1 | Multi-Stream Ingest & Reconnect |
 | OPS-02 | 4 | Hardening & Operations |
 | OPS-03 | 4 | Hardening & Operations |
 | OPS-04 | 4 | Hardening & Operations |
 | OPS-05 | 4 | Hardening & Operations |
 
-**Coverage:** 59 / 59 v1 requirements mapped. No orphans, no duplicates.
+**Coverage:** 63 / 63 v1 requirements mapped. No orphans, no duplicates.
+
+*2026-04-14 amendment — added ING-09, ING-10, ING-11, STO-10 for video-file ingest (merge + isolated modes) and the `TimeSource` abstraction. All four mapped to Phase 2 so the EventWriter is built with them in mind from day one. No Phase 0/1 rework required.*

@@ -3,7 +3,7 @@
 **Milestone goal:** A working local-only AI event pipeline that watches 4 RTSP streams, runs YOLOv8n+ByteTrack continuously, fires DeepFace and EasyOCR on trigger, logs events to SQLite, and survives overnight.
 
 **Granularity:** coarse (5 phases including Phase 0)
-**Coverage:** 59/59 v1 requirements mapped
+**Coverage:** 63/63 v1 requirements mapped
 **Source inputs:** `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md`, `.planning/research/SUMMARY.md`
 
 **Deferred to a later milestone:** The Vue 3 dark-mode dashboard (`#151a2c`), the FastAPI read-only shim, and all UI work. The entire v1 pipeline is operator-usable via SQLite + file browser; UI is not on the critical path. Do NOT plan dashboard work in this milestone.
@@ -78,7 +78,7 @@
 
 **Depends on**: Phase 1 (needs 4 live sub-streams + on-demand main-stream grabs + bounded cam queues)
 
-**Requirements**: TRK-01, TRK-02, TRK-03, TRK-04, TRK-05, TRK-06, TRK-07, TRK-08, TRK-09, ZON-01, ZON-02, ZON-03, ZON-04, STO-01, STO-02, STO-03, STO-04, STO-05, STO-06, STO-07
+**Requirements**: TRK-01, TRK-02, TRK-03, TRK-04, TRK-05, TRK-06, TRK-07, TRK-08, TRK-09, ZON-01, ZON-02, ZON-03, ZON-04, STO-01, STO-02, STO-03, STO-04, STO-05, STO-06, STO-07, STO-10, ING-09, ING-10, ING-11
 
 **Success Criteria** (what must be TRUE):
   1. User watches a live debug overlay on any one camera and sees persistent bounding boxes and ByteTrack IDs on every `person` and every `car/bus/truck` — with short flickers suppressed (min-track-age gating) and confidence floors + minimum bbox area rejecting noise before anything reaches the event pipeline.
@@ -86,6 +86,8 @@
   3. User runs `tools/draw_zones.py` against a live frame from each camera, clicks to define polygons, saves `zones.yaml`, and restarts the pipeline — the new zones load automatically and the tool requires no hand-typed pixel coordinates.
   4. User walks through the "Driveway" polygon once and sees exactly one `Zone_Enter` row in `$DB_PATH` and one JPEG on disk for that event — no duplicate rows from a single track (per-`(entity_id, event_type)` cooldown), no orphan image (atomic `.tmp`+rename before DB insert), and the `image_path` column stores a **relative** path that joins with `EVENT_IMAGE_DIR` at runtime.
   5. User opens the SQLite file (which lives on WSL2 ext4, not `/mnt/c/...`) and sees WAL mode enabled, `synchronous=NORMAL`, the `EventLog` schema from PROJECT.md with UTC ISO-8601 timestamps, indexes on `(timestamp, camera_id, event_type, entity_id, zone_name)`, and zero `database is locked` errors under a 20-events/sec burst — because a single EventWriter thread is the only writer.
+  6. User runs `python -m home_cctv --ingest-file yesterday_morning.mp4` against a recorded video whose camera-clock overlay reads `2026-04-13 07:14:22`, and the resulting `Zone_Enter` rows land in `EventLog` at timestamps `2026-04-13T07:14:22Z+N` — NOT at `now()` — via a `FileTimeSource` that reads the overlay via small-ROI OCR (fallback: file mtime, then filename parse, then hard error). Re-ingesting the same file produces zero duplicate rows because the dedup key `(camera_id, event_type, entity_id, timestamp ± 5s)` matches the existing rows.
+  7. User runs `python -m home_cctv --analyze-file experiment.mp4 --isolated` and the resulting events are tagged with a unique `session_id` (or written to a sandbox table, per STO-10 implementation), so the main event log stays untouched. User can query sandbox events separately, drop them on demand, and the production `EventLog` is unaffected.
 
 **Plans**: TBD
 **UI hint**: no
