@@ -2,11 +2,11 @@
 
 ## What This Is
 
-A zero-budget, CPU-only smart surveillance system that adds AI event detection (people, faces, vehicles, license plates, zone intrusions, vehicle entries/exits, loitering) on top of four legacy RTSP IP cameras attached to a BitVision DVR at `192.168.1.10`. Runs entirely on a local Windows/WSL2 machine with no GPU, using open-source models, and logs events to a local SQLite database and an on-disk image store for later review.
+A zero-budget smart surveillance system that adds AI event detection (people, faces, vehicles, license plates, zone intrusions, vehicle entries/exits, loitering) on top of four legacy RTSP IP cameras attached to a BitVision DVR at `192.168.1.10`. Runs entirely on a local Windows/WSL2 laptop with an RTX 3060 GPU (CUDA 12 via WSL2 passthrough), using open-source models, and logs events to a local SQLite database and an on-disk image store for later review.
 
 ## Core Value
 
-Turn dumb legacy cameras into a smart event log — without buying any new hardware, without cloud dependencies, and without melting a CPU that has to watch four streams at once.
+Turn dumb legacy cameras into a smart event log — without buying any new hardware, without cloud dependencies, and without the CPU gymnastics of a GPU-less setup.
 
 ## Requirements
 
@@ -49,7 +49,7 @@ Turn dumb legacy cameras into a smart event log — without buying any new hardw
 ## Context
 
 **Deployment environment**
-- Local Windows machine running WSL2 (Ubuntu 24.04). Strict CPU-only inference.
+- Local Windows laptop running WSL2 (Ubuntu 24.04). Ryzen 7 6800H CPU, 32 GB RAM, NVIDIA RTX 3060 Laptop GPU (6 GB VRAM) exposed to WSL2 via CUDA 12 passthrough (Windows driver 561.09, nvidia-smi inside WSL2 shows CUDA runtime 12.6).
 - 4 legacy IP cameras wired to a BitVision DVR at `192.168.1.10:554` (2 internal, 2 external).
 - BitVision app handles cloud P2P viewing; this project bypasses it locally for AI.
 
@@ -62,12 +62,12 @@ Turn dumb legacy cameras into a smart event log — without buying any new hardw
 | Cam 3 | `rtsp://admin:***@192.168.1.10:554/21` | `rtsp://admin:***@192.168.1.10:554/20` |
 | Cam 4 | `rtsp://admin:***@192.168.1.10:554/31` | `rtsp://admin:***@192.168.1.10:554/30` |
 
-**Core software stack (as specified)**
-- Python + OpenCV (RTSP/TCP, nobuffer, discardcorrupt, low-delay — mirroring ffplay flags)
-- YOLOv8n (Nano) for CPU object detection
-- ByteTrack for ID persistence + centroid velocity
-- DeepFace for conditional face recognition
-- EasyOCR for conditional license plate reading
+**Core software stack (as pivoted 2026-04-16 after GPU availability confirmed)**
+- Python 3.11 + OpenCV (RTSP/TCP, nobuffer, discardcorrupt, low-delay — mirroring ffplay flags)
+- YOLOv8n / YOLO11 (Ultralytics) running on CUDA via `torch==2.5.1+cu121` — sub-stream object detection at 15-25 FPS per camera
+- ByteTrack for ID persistence + centroid velocity (Ultralytics built-in tracker)
+- DeepFace on GPU (TensorFlow 2.16 + CUDA 12) for conditional face recognition
+- EasyOCR on GPU (`gpu=True`) for conditional license plate reading
 - SQLite (`cctv_events.db`) + local image directory for event storage
 - `.env` for all secrets (`DVR_IP`, `DVR_PORT`, `DVR_USER`, `DVR_PASS`, `EVENT_IMAGE_DIR`, `DB_PATH`)
 - Future UI: React minimal dark-mode dashboard (`#151a2c`) reading from SQLite/JSON
@@ -100,19 +100,20 @@ Turn dumb legacy cameras into a smart event log — without buying any new hardw
 ## Constraints
 
 - **Budget**: $0 — open-source models only, no paid APIs, no new hardware
-- **Compute**: CPU-only (Windows + WSL2 Ubuntu 24.04, no dedicated GPU)
+- **Compute**: GPU-primary — NVIDIA RTX 3060 Laptop (6 GB VRAM) via WSL2 CUDA 12 passthrough (Windows driver 561.09+, CUDA runtime 12.6). CPU fallback path retained for portability (the pipeline must still run without the GPU by unsetting `CUDA_VISIBLE_DEVICES` or falling back to `torch` CPU wheels)
 - **Network protocol**: RTSP over TCP mandatory (UDP drops on this LAN)
 - **Cameras**: 4 legacy IP cameras via BitVision DVR at `192.168.1.10` — cannot be upgraded or replaced
 - **Security**: DVR credentials must come from `.env`; never committed to git (enforced via `.gitignore`)
 - **Operation modes**: Must work with both live RTSP streams *and* offline MP4 files (for dev/test)
-- **Stream budget**: Sub-stream continuous AI must stay at ~10-15 FPS per camera without pegging CPU; main-stream may only be touched one frame at a time on event
+- **Stream budget**: Sub-stream continuous AI runs on GPU (target 4× 15-25 FPS sustained). The "Trigger & Catch" main-stream policy is retained semantically (face at peak bbox, plate at zero velocity, etc. are *quality* gates not just CPU budget gates), but the hard CPU-budget anxiety is lifted
 - **Dependencies**: Python, OpenCV, Ultralytics YOLOv8, ByteTrack, DeepFace, EasyOCR (all open-source)
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |---|---|---|
-| "Trigger & Catch" dual-stream architecture instead of running all models on main streams | Only way to keep 4 streams + YOLO + DeepFace + OCR within a CPU budget | — Pending |
+| "Trigger & Catch" dual-stream architecture instead of running all models on main streams | Original CPU-budget driver is lifted on GPU, but the pattern is retained semantically: face at peak bbox and ALPR at zero velocity are *quality* gates (clearer crop, less motion blur), not just cost gates | — Pending |
+| GPU-primary stack (RTX 3060 + CUDA 12 via WSL2 passthrough), CPU fallback retained | User has an RTX 3060 Laptop — using it is a 5-10× speedup over CPU inference, lets us run full-quality models (YOLO11s/m instead of YOLOv8n) and run DeepFace without subprocess-isolation pain | — Pending |
 | Force RTSP over TCP with nobuffer/discardcorrupt flags | UDP packets drop on this LAN; proven working via `ffplay` in `terminal.txt` | — Pending |
 | Remove pixel-based motion detection entirely | Shadows/rain/trees caused false positives; AI-object-in-polygon is the real signal | — Pending |
 | ByteTrack as the foundation for all event logic (IDs + centroid velocity) | Needed for face-peak gating, parked-car gating, vehicle interactions, loitering | — Pending |
@@ -139,4 +140,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-13 after initialization*
+*Last updated: 2026-04-16 after GPU-stack pivot (RTX 3060 Laptop confirmed available via WSL2 CUDA passthrough)*

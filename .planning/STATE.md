@@ -86,6 +86,7 @@ Plan: 1 of 3
 - **2026-04-13** — Concurrency model: 4 stream threads + 1 inference thread (NOT 4) + 1 main-stream grabber + 1 EventWriter + DeepFace subprocess + EasyOCR subprocess. No asyncio.
 - **2026-04-13** — SQLite + `EVENT_IMAGE_DIR` MUST live on WSL2 ext4, NEVER `/mnt/c/...` (DrvFs kills WAL).
 - **2026-04-13** — React dashboard deferred to a later milestone. v1 is operator-usable via SQLite + file browser.
+- **2026-04-16** — **Stack pivoted from CPU-only to GPU-primary.** User confirmed RTX 3060 Laptop (6 GB VRAM) is exposed to WSL2 via CUDA 12 passthrough (nvidia-smi inside WSL2 shows driver 561.09, CUDA 12.6). `torch` pinned to `2.5.1+cu121`, `tensorflow-cpu==2.16.2` → `tensorflow[and-cuda]==2.16.2`. OpenVINO and onnxruntime dropped from deps (CPU-only optimizations). All Phase 0 scaffolding code is unchanged — the pivot is purely at the dep-pin layer. `.venv` must be rebuilt (`rm -rf .venv && uv sync`) before the Phase 0 live sweep.
 
 ### Active TODOs
 

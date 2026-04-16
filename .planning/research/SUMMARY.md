@@ -1,8 +1,11 @@
 # Research Synthesis — Home CCTV AI Pipeline
 
 **Synthesized:** 2026-04-13
+**Last amended:** 2026-04-16 (GPU-stack pivot — see annotations marked "2026-04-16 pivot")
 **Sources:** STACK.md, FEATURES.md, ARCHITECTURE.md, PITFALLS.md
 **Audience:** requirements definer + roadmapper (this should be enough; do not re-read the 4 source files unless drilling down)
+
+**⚠ 2026-04-16 GPU pivot** — The user confirmed an RTX 3060 Laptop (6 GB VRAM) is available via WSL2 CUDA 12 passthrough. The CPU-only pins below were replaced with GPU-capable pins. `openvino` and `onnxruntime` were dropped (pure CPU optimizations). The architecture section still describes subprocess isolation for DeepFace/EasyOCR — **that is retained** because TF/Torch CUDA context sharing is even messier than CPU OMP sharing. The "Trigger & Catch" pattern is also retained — face-at-peak-bbox and ALPR-at-zero-velocity are quality gates (clearer crops, less motion blur), not just cost gates.
 
 ---
 
@@ -10,7 +13,7 @@
 
 - **The architecture is correct as specified.** "Trigger & Catch" (continuous YOLO on sub-streams, heavy models on one main-stream frame on event) is the only viable CPU-only design for 4 streams; all 4 research files agree.
 - **Two mandatory stack changes on top of PROJECT.md:** (a) drop the standalone `ifzhang/ByteTrack` repo in favor of Ultralytics' built-in `tracker="bytetrack.yaml"` (same algorithm, no setup.py hell); (b) export YOLO weights to OpenVINO IR for ~2.5–3× CPU speedup — this is the single biggest budget win and probably the difference between "works" and "frames dropping".
-- **Three mandatory version pins:** `numpy==1.26.4` (NOT 2.x), `tensorflow-cpu==2.16.2` + `tf-keras==2.16.0` + `TF_USE_LEGACY_KERAS=1` (DeepFace breaks on TF ≥ 2.17 and on Keras 3). Getting these wrong costs a day.
+- **Three mandatory version pins:** `numpy==1.26.4` (NOT 2.x), `tensorflow[and-cuda]==2.16.2` + `tf-keras==2.16.0` + `TF_USE_LEGACY_KERAS=1` (DeepFace breaks on TF ≥ 2.17 and on Keras 3). Getting these wrong costs a day. **(2026-04-16 pivot: was `tensorflow-cpu` before GPU pivot.)**
 - **The project's real risks are not the AI models — they are the boundaries.** RTSP stalls on WSL2 that `cv2` can't time out, SQLite write contention, DeepFace/EasyOCR cold-start weight downloads blocking the trigger thread, ByteTrack ID-switches silently corrupting face triggers, disk filling from snapshots. All have concrete mitigations in §5.
 - **Concurrency model: hybrid threads + processes.** 4 stream threads (GIL releases in FFmpeg), 1 YOLO/ByteTrack inference thread (not 4 — parallel YOLOs fight for the same cores), 1 main-stream grabber thread, 1 SQLite writer thread, and DeepFace + EasyOCR each in their own **subprocess** (TF/Torch global-state isolation + cold-start prewarm).
 - **Build order is sequential and unambiguous.** ARCHITECTURE and FEATURES agree: stream plumbing → tracking → zones/events → trigger logic → face → plate → vehicle interactions → dashboard. Each phase is runnable end-to-end before the next begins.
@@ -31,20 +34,20 @@
 
 ### Detection + Tracking
 - `ultralytics==8.4.37`
-- `openvino==2026.1.0` **(mandatory — YOLO weights exported to OpenVINO IR)**
-- `onnxruntime==1.24.4` (fallback backend)
+- ~~`openvino==2026.1.0`~~ **DROPPED 2026-04-16** — OpenVINO is a CPU-only optimization; pointless on a CUDA GPU. YOLO runs directly through `torch` + CUDA.
+- ~~`onnxruntime==1.24.4`~~ **DROPPED 2026-04-16** — was a CPU fallback backend; redundant on GPU. Re-add as `onnxruntime-gpu` only if a specific future dep demands it.
 - `lap==0.5.13`; `scipy>=1.13,<2`
 - **Model:** `yolo26n.pt` (recommended; ~43% faster CPU), with `yolov8n.pt` as a 1-line fallback
 - **Tracker:** Ultralytics built-in `tracker="bytetrack.yaml"` (NOT the `ifzhang/ByteTrack` repo)
 
 ### Face (event-triggered)
-- `tensorflow-cpu==2.16.2` **(do NOT upgrade to 2.17+)**
+- `tensorflow[and-cuda]==2.16.2` **(do NOT upgrade to 2.17+)** — the `[and-cuda]` extra bundles `nvidia-cudnn-cu12`, `nvidia-cublas-cu12`, etc. as pip packages so no system CUDA install is needed inside WSL2. **(2026-04-16 pivot: was `tensorflow-cpu==2.16.2`.)**
 - `tf-keras==2.16.0` with `os.environ["TF_USE_LEGACY_KERAS"]="1"`
 - `deepface==0.0.99`
 - Config: `model_name="ArcFace"`, `detector_backend="retinaface"`, `distance_metric="cosine"`
 
 ### OCR / ALPR (event-triggered)
-- `torch==2.5.1+cpu` (install from `https://download.pytorch.org/whl/cpu`)
+- `torch==2.5.1+cu121` (install from `https://download.pytorch.org/whl/cu121`) — CUDA 12.1 wheels are forward-compatible with driver CUDA 12.6. **(2026-04-16 pivot: was `torch==2.5.1+cpu`.)**
 - `easyocr==1.7.2` with `gpu=False` **explicit** (its auto-detect silently falls back and confuses)
 - Architect behind an `OcrAdapter` interface — PaddleOCR PP-OCRv5 is the upgrade path if accuracy fails
 

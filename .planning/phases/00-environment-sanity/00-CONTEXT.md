@@ -106,23 +106,24 @@ These change assumptions made in PROJECT.md / SUMMARY.md. Downstream agents MUST
   uv sync                   # creates .venv, installs pinned deps
   uv run python -m home_cctv --phase0
   ```
-- **Initial pinned deps in `[project.dependencies]`:** exactly what SUMMARY.md §2 specifies. The full stack is installed in Phase 0 even though most of it isn't used until Phase 2, so each later phase starts offline.
-  - `opencv-python-headless==4.13.0.92`
+- **Initial pinned deps in `[project.dependencies]`** (amended 2026-04-16 for GPU pivot — `tensorflow-cpu` → `tensorflow[and-cuda]`, `torch==2.5.1+cpu` → `torch==2.5.1+cu121`, `openvino` and `onnxruntime` dropped):
+  - `opencv-python-headless==4.10.0.84` *(4.13 requires numpy ≥ 2 which breaks the TF 2.16 numpy pin — executor deviation from Plan 00-01)*
   - `numpy==1.26.4`
   - `python-dotenv==1.2.2`
   - `pydantic>=2.10,<3`
+  - `pydantic-settings>=2.6,<3` *(added by executor during Plan 00-01)*
   - `pyyaml>=6,<7`
   - `ultralytics==8.4.37`
-  - `openvino==2026.1.0`
-  - `onnxruntime==1.24.4`
   - `lap==0.5.13`
   - `scipy>=1.13,<2`
-  - `torch==2.5.1+cpu` (custom index)
-  - `easyocr==1.7.2`
-  - `tensorflow-cpu==2.16.2`
+  - `torch==2.5.1+cu121` (custom index: `https://download.pytorch.org/whl/cu121`)
+  - `easyocr==1.7.2` *(call with `gpu=True` from Phase 3)*
+  - `tensorflow[and-cuda]==2.16.2`
   - `tf-keras==2.16.0`
   - `deepface==0.0.99`
   - `shapely>=2.0,<3` (for Phase 2 zone polygons, pre-installed)
+  - `psutil>=6,<7`
+- **Dropped 2026-04-16:** `openvino==2026.1.0` (CPU-only optimization, useless on GPU); `onnxruntime==1.24.4` (CPU fallback, redundant).
 - **Dev deps (`[project.optional-dependencies].dev`):** `pytest`, `pytest-json-report`, `ruff`, `mypy`.
 - **`TF_USE_LEGACY_KERAS=1`** exported in `src/home_cctv/__init__.py` (set before any TF import).
 - **No conda, no poetry, no plain `requirements.txt`.**
@@ -176,13 +177,16 @@ These change assumptions made in PROJECT.md / SUMMARY.md. Downstream agents MUST
     },
     "model_bundle": {
       "yolov8n_pt_cached": true,
-      "yolo26n_pt_cached": true,
-      "yolo_openvino_export_cached": true,
+      "yolo11n_pt_cached": true,
       "deepface_arcface_cached": true,
       "deepface_retinaface_cached": true,
       "easyocr_english_cached": true,
       "total_weights_size_mb": 1427,
-      "cold_start_ms": { "yolo_openvino": 620, "deepface": 8400, "easyocr": 5100 }
+      "cold_start_ms": { "yolo_gpu": 180, "deepface": 3400, "easyocr": 1900 },
+      "cuda_available": true,
+      "cuda_runtime_version": "12.6",
+      "gpu_device_name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+      "gpu_vram_total_mb": 6144
     },
     "blockers_resolved": {
       "Q1_host_fps_baseline": true,

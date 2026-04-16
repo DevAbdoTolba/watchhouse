@@ -1,7 +1,7 @@
 [project]
 name = "home_cctv"
 version = "0.1.0"
-description = "Local-only AI event pipeline over 4 RTSP streams (CPU-only, Windows+WSL2)"
+description = "Local-only AI event pipeline over 4 RTSP streams (GPU-accelerated via NVIDIA RTX 3060 under WSL2 CUDA 12 passthrough; CPU fallback retained)"
 requires-python = ">=3.11,<3.12"
 dependencies = [
   "opencv-python-headless==4.10.0.84",
@@ -11,13 +11,11 @@ dependencies = [
   "pydantic-settings>=2.6,<3",
   "pyyaml>=6,<7",
   "ultralytics==8.4.37",
-  "openvino==2026.1.0",
-  "onnxruntime==1.24.4",
   "lap==0.5.13",
   "scipy>=1.13,<2",
-  "torch==2.5.1+cpu",
+  "torch==2.5.1+cu121",
   "easyocr==1.7.2",
-  "tensorflow-cpu==2.16.2",
+  "tensorflow[and-cuda]==2.16.2",
   "tf-keras==2.16.0",
   "deepface==0.0.99",
   "shapely>=2.0,<3",
@@ -39,12 +37,12 @@ home_cctv = "home_cctv.__main__:main"
 index-strategy = "unsafe-best-match"
 
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = { index = "pytorch-cu121" }
 
 [build-system]
 requires = ["hatchling"]

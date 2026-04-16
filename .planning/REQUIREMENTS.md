@@ -12,7 +12,7 @@
 
 ### Environment (ENV)
 
-- [ ] **ENV-01**: User runs the pipeline end-to-end on Windows 11 + WSL2 Ubuntu 24.04 with Python 3.11, CPU-only, no GPU dependency
+- [ ] **ENV-01**: User runs the pipeline end-to-end on Windows 11 + WSL2 Ubuntu 24.04 with Python 3.11, using the NVIDIA RTX 3060 Laptop GPU via WSL2 CUDA 12 passthrough (`torch.cuda.is_available() == True` inside the venv). A CPU-only fallback path still works but is not the primary target
 - [ ] **ENV-02**: User configures WSL2 mirrored networking (or verified alternative) so the pipeline inside WSL2 can reach the DVR at `192.168.1.10:554`
 - [ ] **ENV-03**: User loads all DVR credentials (`DVR_IP`, `DVR_PORT`, `DVR_USER`, `DVR_PASS`) and paths (`EVENT_IMAGE_DIR`, `DB_PATH`) exclusively from `.env` — no credentials in source, YAML, or logs
 - [ ] **ENV-04**: User starts the entire pipeline with a single command (`python -m home_cctv` or equivalent) and stops it cleanly with Ctrl+C
