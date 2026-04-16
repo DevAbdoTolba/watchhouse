@@ -201,7 +201,7 @@ These change assumptions made in PROJECT.md / SUMMARY.md. Downstream agents MUST
 ### Display Strategy (`--show` flag)
 
 - **Decision:** Default headless. `--show` flag opens a `cv2.imshow` window. Falls back cleanly with a warning if no display is available (no GUI, no WSLg, no X server).
-- **User note captured:** `--show` is the **MVP of a future dashboard live-view button**. When the Vue 3 dashboard milestone ships, the dashboard's "Live View" button will invoke the same code path. The headless JPEG-dump-every-5s path remains available as a low-overhead fallback and for CI/regression testing.
+- **User note captured:** `--show` is the **MVP of a future dashboard live-view button**. When the React dashboard milestone ships, the dashboard's "Live View" button will invoke the same code path. The headless JPEG-dump-every-5s path remains available as a low-overhead fallback and for CI/regression testing.
 - **Phase 0 scope:** `--show` must work (or gracefully degrade). Actual dashboard UI is deferred; see Deferred Ideas.
 
 ### Model Pre-Download
@@ -317,7 +317,7 @@ These change assumptions made in PROJECT.md / SUMMARY.md. Downstream agents MUST
 
 These came up during discussion but belong to later phases or milestones. Do NOT implement in Phase 0.
 
-- **Vue 3 dashboard with a "Live View" button** that invokes the same `--show` code path. Confirmed by user as the future form of the Phase 0 `--show` flag. Belongs to the deferred Vue dashboard milestone after v1 ships.
+- **Vue 3 dashboard with a "Live View" button** that invokes the same `--show` code path. Confirmed by user as the future form of the Phase 0 `--show` flag. Belongs to the deferred React dashboard milestone after v1 ships.
 - **Zone polygon drawing tool (`tools/draw_zones.py`)** — deferred to Phase 2 (ZON-01).
 - **`zones.yaml`** with the Perimeter Crossfire + Threshold Head-to-Head polygons. Known geometry, deferred to Phase 2 when the zone evaluator is built.
 - **Cam 2 ↔ Cam 4 same-person heuristic** using Cam 2's front-lit rear view to compensate for Cam 4's backlit silhouette. Belongs to a future "cross-camera entity handoff" phase (v2+).
@@ -332,7 +332,7 @@ These came up during discussion but belong to later phases or milestones. Do NOT
 - YOLO inference, ByteTrack, zones, events, SQLite schema (→ Phase 2)
 - Main-stream grabber, triggers, DeepFace, EasyOCR (→ Phase 3)
 - Retention, metrics JSON, worker supervision (→ Phase 4)
-- Any Vue dashboard work (→ deferred milestone)
+- Any React dashboard work (→ deferred milestone)
 
 ---
 

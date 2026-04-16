@@ -6,7 +6,7 @@
 **Coverage:** 63/63 v1 requirements mapped
 **Source inputs:** `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md`, `.planning/research/SUMMARY.md`
 
-**Deferred to a later milestone:** The Vue 3 dark-mode dashboard (`#151a2c`), the FastAPI read-only shim, and all UI work. The entire v1 pipeline is operator-usable via SQLite + file browser; UI is not on the critical path. Do NOT plan dashboard work in this milestone.
+**Deferred to a later milestone:** The React dark-mode dashboard (`#151a2c`), the FastAPI read-only shim, and all UI work. The entire v1 pipeline is operator-usable via SQLite + file browser; UI is not on the critical path. Do NOT plan dashboard work in this milestone.
 
 **Parallelization:** enabled (per config). Phase 0 is strictly sequential — it answers empirical blockers. Phases 1-4 allow parallel plan execution where plan dependencies permit.
 

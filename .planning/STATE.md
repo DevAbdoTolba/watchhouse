@@ -1,3 +1,17 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: unknown
+last_updated: "2026-04-13T16:48:12.733Z"
+progress:
+  total_phases: 5
+  completed_phases: 0
+  total_plans: 3
+  completed_plans: 0
+  percent: 0
+---
+
 # STATE — Home CCTV AI Pipeline
 
 *Single source of truth for "where are we right now?". Updated on every phase/plan transition.*
@@ -18,6 +32,9 @@
 ---
 
 ## Current Position
+
+Phase: 0 (Environment & Sanity) — EXECUTING
+Plan: 1 of 3
 
 - **current_phase**: 0
 - **current_phase_name**: Environment & Sanity
@@ -68,7 +85,7 @@
 - **2026-04-13** — Version pins locked: `numpy==1.26.4` (NOT 2.x), `tensorflow-cpu==2.16.2`, `tf-keras==2.16.0`, `TF_USE_LEGACY_KERAS=1`, `deepface==0.0.99`, `easyocr==1.7.2` with `gpu=False` explicit.
 - **2026-04-13** — Concurrency model: 4 stream threads + 1 inference thread (NOT 4) + 1 main-stream grabber + 1 EventWriter + DeepFace subprocess + EasyOCR subprocess. No asyncio.
 - **2026-04-13** — SQLite + `EVENT_IMAGE_DIR` MUST live on WSL2 ext4, NEVER `/mnt/c/...` (DrvFs kills WAL).
-- **2026-04-13** — Vue 3 dashboard deferred to a later milestone. v1 is operator-usable via SQLite + file browser.
+- **2026-04-13** — React dashboard deferred to a later milestone. v1 is operator-usable via SQLite + file browser.
 
 ### Active TODOs
 
@@ -90,6 +107,7 @@ _(none — Phase 0 will burn down the empirical blockers)_
 **Next session entry point**: `/gsd-plan-phase 0`
 
 Resume instructions for a fresh Claude context:
+
 1. Read `.planning/PROJECT.md` for core value and constraints
 2. Read `.planning/ROADMAP.md` for phase structure
 3. Read `.planning/REQUIREMENTS.md` → Traceability table for REQ→phase mapping

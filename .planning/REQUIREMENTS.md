@@ -4,7 +4,7 @@
 
 **Scope:** Milestone v1 = "A working local-only AI event pipeline that watches 4 RTSP streams, runs YOLOv8n+ByteTrack continuously, fires DeepFace and EasyOCR on trigger, logs events to SQLite, and survives overnight."
 
-**Out of scope for v1:** Vue 3 dashboard, cross-camera entity handoff, CLIP search, push notifications, multi-user auth, HTTPS, live video streaming, 24/7 recording, any cloud integration. See PROJECT.md → Out of Scope.
+**Out of scope for v1:** React dashboard, cross-camera entity handoff, CLIP search, push notifications, multi-user auth, HTTPS, live video streaming, 24/7 recording, any cloud integration. See PROJECT.md → Out of Scope.
 
 ---
 
@@ -106,7 +106,7 @@
 
 *These are valuable but explicitly NOT in v1 scope. Do not block v1 on them.*
 
-- **Vue 3 dashboard** (`#151a2c` dark mode) reading SQLite via a read-only FastAPI shim — separate milestone
+- **React dashboard** (`#151a2c` dark mode) reading SQLite via a read-only FastAPI shim — separate milestone
 - **Cross-camera entity hand-off** (same person across adjacent cameras)
 - **CLIP-based natural-language event search**
 - **Daily / weekly summary digest**

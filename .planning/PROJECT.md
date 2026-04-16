@@ -34,7 +34,7 @@ Turn dumb legacy cameras into a smart event log — without buying any new hardw
 - [ ] Save triggered main-stream snapshots to a dated directory tree under `EVENT_IMAGE_DIR`
 - [ ] Load all secrets (DVR creds, paths) from `.env` — never hardcoded
 - [ ] Graceful handling of stream drops / DVR reconnects without crashing the pipeline
-- [ ] Minimal Vue 3 dark-mode dashboard (`#151a2c`) reading SQLite/JSON for event review — *deferred to later milestone*
+- [ ] Minimal React dark-mode dashboard (`#151a2c`) reading SQLite/JSON for event review — *deferred to later milestone*
 
 ### Out of Scope
 
@@ -70,7 +70,7 @@ Turn dumb legacy cameras into a smart event log — without buying any new hardw
 - EasyOCR for conditional license plate reading
 - SQLite (`cctv_events.db`) + local image directory for event storage
 - `.env` for all secrets (`DVR_IP`, `DVR_PORT`, `DVR_USER`, `DVR_PASS`, `EVENT_IMAGE_DIR`, `DB_PATH`)
-- Future UI: Vue 3 minimal dark-mode dashboard (`#151a2c`) reading from SQLite/JSON
+- Future UI: React minimal dark-mode dashboard (`#151a2c`) reading from SQLite/JSON
 
 **Known engineering problems and solutions**
 1. *CPU throttling from running all models on all streams* → "Trigger & Catch" architecture. Continuous loop runs only YOLOv8n + ByteTrack on sub-streams. DeepFace / EasyOCR sleep until a tracker rule fires, then process exactly one main-stream frame.
@@ -119,7 +119,7 @@ Turn dumb legacy cameras into a smart event log — without buying any new hardw
 | Centroid velocity gate for ALPR (OCR only when velocity ≈ 0) | Motion blur + headlight bloom make moving-car OCR unreliable | — Pending |
 | SQLite + local image directory for event storage | Zero-budget, zero-ops, matches local-only deployment | — Pending |
 | All secrets via `.env` | Credentials for DVR must never touch source control | — Pending |
-| Future dashboard: Vue 3 dark-mode (`#151a2c`), reads SQLite/JSON | Keeps runtime pipeline decoupled from UI; minimal dependency footprint | — Pending |
+| Future dashboard: React dark-mode (`#151a2c`), reads SQLite/JSON | Keeps runtime pipeline decoupled from UI; minimal dependency footprint | — Pending |
 
 ## Evolution
 
