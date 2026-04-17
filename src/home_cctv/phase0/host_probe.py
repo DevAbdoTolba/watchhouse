@@ -132,20 +132,60 @@ def detect_wsl2_networking_mode() -> NetworkingMode:
         return "unknown"
 
 
+def _decode_wsl_version_bytes(raw: bytes) -> str:
+    """Decode ``wsl.exe --version`` stdout, tolerating its UTF-16-LE output.
+
+    2026-04-17 patch (Bug 4): on Windows 11, ``wsl.exe --version`` writes a
+    BOM-less UTF-16-LE stream. The previous probe decoded it as UTF-8 and
+    the report ended up with embedded NUL bytes
+    (``W\\x00S\\x00L\\x00 \\x00v\\x00e\\x00r...``). We try UTF-16-LE first,
+    detect the mojibake signature (any NUL byte on even indices means a
+    BOM-less UTF-16-LE stream was read as single-byte), and fall back to
+    UTF-8 only if the decoded string has no NULs.
+    """
+    if not raw:
+        return ""
+    # Strip BOM if present (UTF-8 or UTF-16).
+    if raw[:3] == b"\xef\xbb\xbf":
+        raw = raw[3:]
+    looks_utf16 = b"\x00" in raw[:64] and len(raw) >= 2 and raw[1:2] == b"\x00"
+    if looks_utf16:
+        try:
+            text = raw.decode("utf-16-le", errors="replace")
+        except Exception:
+            text = raw.decode("utf-8", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    text = text.lstrip("\ufeff").replace("\r", "").strip()
+    return text
+
+
 def _probe_wsl_version() -> str:
-    """Best-effort WSL version string. Falls back to ``/proc/version``."""
-    try:
-        out = subprocess.run(
-            ["wsl.exe", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if out.returncode == 0 and out.stdout.strip():
-            first = out.stdout.strip().splitlines()[0]
-            return first
-    except Exception:
-        pass
+    """Best-effort WSL version string. Falls back to ``/proc/version``.
+
+    ``wsl.exe --version`` on modern Windows returns UTF-16-LE stdout without
+    a BOM, so we capture bytes and decode explicitly via
+    ``_decode_wsl_version_bytes`` (Bug 4 fix).
+    """
+    wsl_paths = (
+        "/mnt/c/Windows/System32/wsl.exe",
+        "wsl.exe",
+    )
+    for wsl_bin in wsl_paths:
+        try:
+            out = subprocess.run(
+                [wsl_bin, "--version"],
+                capture_output=True,
+                timeout=2,
+            )
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
+            continue
+        except Exception:
+            continue
+        text = _decode_wsl_version_bytes(out.stdout or b"")
+        if text:
+            first_line = text.splitlines()[0] if text else ""
+            return first_line or text
     try:
         return Path("/proc/version").read_text(encoding="utf-8", errors="replace").strip()
     except Exception:
@@ -184,4 +224,5 @@ __all__ = [
     "assert_hevc_decoder",
     "detect_wsl2_networking_mode",
     "probe_host",
+    "_decode_wsl_version_bytes",
 ]
