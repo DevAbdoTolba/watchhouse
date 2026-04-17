@@ -38,6 +38,44 @@ PHASE0_DURATION_SEC: int = 1800  # 30 minutes per camera per CONTEXT.md
 _FPS_TOLERANCE: float = 0.20
 
 
+# Mapping of canonical Settings field → every env-var name the alias shim
+# will accept. Used by ``_collect_env_vars_loaded`` to report which vars
+# were actually populated in the user's environment (Bug 3 fix).
+_SETTINGS_FIELD_ENV_ALIASES: dict[str, tuple[str, ...]] = {
+    "DVR_IP": ("DVR_IP", "DVR_LOCAL_IP"),
+    "DVR_PORT": ("DVR_PORT", "DVR_LOCAL_RTSP_PORT"),
+    "DVR_USER": ("DVR_USER", "DVR_USERNAME"),
+    "DVR_PASS": ("DVR_PASS", "DVR_PASSWORD"),
+    "EVENT_IMAGE_DIR": ("EVENT_IMAGE_DIR",),
+    "DB_PATH": ("DB_PATH",),
+    "LOG_DIR": ("LOG_DIR",),
+    "MODEL_CACHE_DIR": ("MODEL_CACHE_DIR",),
+}
+
+
+def _collect_env_vars_loaded(settings: Settings) -> list[str]:
+    """Return env-var names that were successfully loaded into Settings.
+
+    Iterates the Settings → alias table and for each canonical field whose
+    Settings value is non-empty, records the FIRST alias that is present
+    in ``os.environ`` (preferring the canonical name when both are set).
+    Passwords are listed by env-var name only; no values leak.
+    """
+    loaded: list[str] = []
+    for field_name, aliases in _SETTINGS_FIELD_ENV_ALIASES.items():
+        try:
+            value = getattr(settings, field_name, None)
+        except Exception:
+            value = None
+        if value in (None, "", 0):
+            continue
+        for alias in aliases:
+            if os.environ.get(alias):
+                loaded.append(alias)
+                break
+    return loaded
+
+
 def per_camera_exit_ok(cam: CameraConfig, c: CameraResult) -> bool:
     """Enforce CONTEXT.md §"Per-camera exit criteria" verbatim."""
     lo = cam.native_fps * (1 - _FPS_TOLERANCE)
@@ -198,17 +236,14 @@ def run_phase0(
     ] in {"mirrored", "bridged"}
 
     # --- env vars + masked ---
-    report.env_vars_loaded = [
-        k
-        for k in (
-            "DVR_IP",
-            "DVR_PORT",
-            "DVR_USER",
-            "EVENT_IMAGE_DIR",
-            "DB_PATH",
-        )
-        if os.environ.get(k)
-    ]
+    # 2026-04-17 patch (Bug 3): the original check only looked at the
+    # canonical env var names (DVR_IP / DVR_PORT / DVR_USER / ...). The
+    # user's real .env uses the LEGACY vocabulary (DVR_USERNAME /
+    # DVR_PASSWORD / DVR_LOCAL_IP / DVR_LOCAL_RTSP_PORT), which the Settings
+    # AliasChoices shim accepts at load time — but the report still showed
+    # env_vars_loaded=[]. Report every env var that Settings successfully
+    # resolved, using whichever alias the user actually set.
+    report.env_vars_loaded = _collect_env_vars_loaded(settings)
     report.credentials_masked_in_logs = True
 
     # --- disk space ---
