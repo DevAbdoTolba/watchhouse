@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 # Importing the package runs the pre-cv2 env setup.
 import home_cctv  # noqa: F401
@@ -29,6 +30,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--show",
         action="store_true",
         help="Open cv2.imshow preview window (falls back if no display)",
+    )
+    # Phase 1 Plan 01-03: new --live flag wires cameras.yaml through the
+    # IngestSupervisor. --mp4-mode is a dev override that points EVERY
+    # virtual camera at the same MP4 file and short-circuits the initial
+    # RTSP probe — useful for regression testing without a live DVR.
+    p.add_argument(
+        "--live",
+        action="store_true",
+        help="Run the full 4-camera IngestSupervisor pipeline against cameras.yaml",
+    )
+    p.add_argument(
+        "--mp4-mode",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Dev override for --live: every virtual camera reads from the "
+            "given MP4 file; skips the RTSP probe."
+        ),
     )
     return p
 
@@ -52,10 +72,12 @@ def main(argv: list[str] | None = None) -> int:
 
     logger = configure_logging(settings.LOG_DIR)
     logger.info(
-        "booted version=%s phase0=%s mp4=%s show=%s dvr=%s event_dir=%s",
+        "booted version=%s phase0=%s mp4=%s live=%s mp4_mode=%s show=%s dvr=%s event_dir=%s",
         home_cctv.__version__,
         args.phase0,
         args.mp4,
+        args.live,
+        args.mp4_mode,
         args.show,
         settings.masked_rtsp_base(),
         settings.EVENT_IMAGE_DIR,
@@ -63,6 +85,9 @@ def main(argv: list[str] | None = None) -> int:
 
     supervisor = ShutdownSupervisor()
     install_signal_handlers(supervisor)
+
+    if args.live:
+        return _run_live_pipeline(args, settings, logger, supervisor)
 
     if args.phase0:
         from home_cctv.phase0.sanity import PHASE0_DURATION_SEC, run_phase0
@@ -169,6 +194,60 @@ def _run_mp4_capture_loop(
         fs.stats.decode_errors,
         fs.stats.measured_fps,
     )
+    return 0
+
+
+def _run_live_pipeline(
+    args: argparse.Namespace,
+    settings,  # type: ignore[no-untyped-def]
+    logger,  # type: ignore[no-untyped-def]
+    supervisor,  # type: ignore[no-untyped-def]
+) -> int:
+    """Phase 1 Plan 01-03 entrypoint.
+
+    Wires ``cameras.yaml`` through an ``IngestSupervisor`` that boots 4
+    reader/watchdog/heartbeat trios + 1 ``MainStreamGrabber``, reusing the
+    already-installed ``ShutdownSupervisor`` so SIGINT drains everything
+    in <2 s.
+    """
+    from home_cctv.ingest.capture import open_frame_source
+    from home_cctv.ingest.ingest_supervisor import IngestSupervisor
+
+    cameras_yaml = Path("cameras.yaml")
+    if args.mp4_mode:
+        # Dev override: every camera reads from the same MP4.
+        mp4_path = args.mp4_mode
+        frame_source_factory = (
+            lambda target, camera_id: open_frame_source(
+                mp4_path, camera_id=camera_id
+            )
+        )
+    else:
+        frame_source_factory = None  # default: real RTSP per cameras.yaml
+
+    sup = IngestSupervisor(
+        settings=settings,
+        cameras_yaml_path=cameras_yaml,
+        shutdown=supervisor,  # reuse the already-installed ShutdownSupervisor
+        frame_source_factory=frame_source_factory,
+        # mp4_mode short-circuits _initial_probe — no real RTSP touched
+        # when this is True (regression/dev mode).
+        mp4_mode=bool(args.mp4_mode),
+    )
+    try:
+        sup.start()
+    except RuntimeError as exc:
+        logger.error("ingest_start_failed err=%r", exc)
+        return 1
+    except ValueError as exc:
+        logger.error("ingest_config_invalid err=%r", exc)
+        return 2
+
+    try:
+        # Block until SIGINT/SIGTERM flips stop_event.
+        supervisor.wait_for_shutdown(timeout=float("inf"))
+    finally:
+        sup.shutdown()
     return 0
 
 
