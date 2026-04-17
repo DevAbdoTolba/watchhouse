@@ -39,6 +39,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from home_cctv.ingest.backoff import JitteredBackoff
 from home_cctv.ingest.capture import FrameSource
 
 _LOG = logging.getLogger("home_cctv.ingest.stream_reader")
@@ -131,6 +132,7 @@ class StreamReader(threading.Thread):
         frame_source: FrameSource,
         stop_event: threading.Event,
         queue: Optional[FrameQueue] = None,
+        backoff: Optional[JitteredBackoff] = None,
     ) -> None:
         super().__init__(name=f"StreamReader[{camera_id}]", daemon=True)
         self.camera_id = camera_id
@@ -139,6 +141,10 @@ class StreamReader(threading.Thread):
         self.queue = queue if queue is not None else FrameQueue(
             maxlen=_DEFAULT_QUEUE_MAXLEN
         )
+        # Plan 01-02 — JitteredBackoff governs the outer reconnect loop.
+        # Tests inject a seeded instance for determinism; production code
+        # defaults to a fresh random-seeded backoff per reader.
+        self._backoff = backoff if backoff is not None else JitteredBackoff()
 
     # ----------------------------------------------------------------- helpers
     def _sanitized_target(self) -> str:
@@ -159,55 +165,122 @@ class StreamReader(threading.Thread):
 
     # ---------------------------------------------------------------- run loop
     def run(self) -> None:  # noqa: D401 — threading.Thread override
-        # Open guard. Plan 02 wraps this in reconnect-with-backoff; Plan 01
-        # simply logs-and-exits on first open failure so the contract is
-        # observable from day one.
-        try:
-            self.frame_source.open()
-        except Exception as exc:
-            _LOG.error(
-                "reader_open_failed camera_id=%s target=%s err=%r",
-                self.camera_id,
-                self._sanitized_target(),
-                exc,
-                extra={"camera_id": self.camera_id},
-            )
-            return
+        """Two-level loop: outer open-or-reconnect, inner read-until-failure.
 
+        Outer loop handles ``open()`` failures and external releases with
+        jittered exponential backoff. Inner loop pushes frames until either
+        the ``FrameSource`` is released externally (``is_open`` flips to
+        False — watchdog cross-thread release from Plan 01-02 Task 2) or
+        an MP4 EOF is detected. Backoff sleeps use ``stop_event.wait(delay)``
+        so SIGINT still exits the reader within one tick even mid-outage.
+        """
         is_file_source = bool(
             getattr(self.frame_source, "is_file_source", False)
         )
-        _LOG.info(
-            "reader_started camera_id=%s target=%s is_file_source=%s",
-            self.camera_id,
-            self._sanitized_target(),
-            is_file_source,
-            extra={"camera_id": self.camera_id},
-        )
-
         try:
             while not self.stop_event.is_set():
-                ok, frame = self.frame_source.read()
-                if ok and frame is not None:
-                    self.queue.put((frame, time.monotonic()))
-                    continue
-                # Not ok. Decide whether this is EOF (file source) or a
-                # transient live-stream hiccup we should keep grinding on.
-                if is_file_source:
-                    stats = self.frame_source.stats
-                    if stats.decode_errors > 0 and stats.frames_decoded > 0:
-                        _LOG.info(
-                            "reader_eof camera_id=%s frames_decoded=%d "
-                            "decode_errors=%d",
+                # -------- Outer loop: open or reconnect --------
+                try:
+                    self.frame_source.open()
+                except Exception as exc:
+                    if is_file_source:
+                        # Cannot reconnect an MP4 — log and exit.
+                        _LOG.error(
+                            "reader_open_failed camera_id=%s target=%s err=%r",
                             self.camera_id,
-                            stats.frames_decoded,
-                            stats.decode_errors,
+                            self._sanitized_target(),
+                            exc,
                             extra={"camera_id": self.camera_id},
                         )
-                        break
-                # Live source: never exit here. D-12 / CONTEXT §'New Facts' #2.
-                # Post-open 5-frame drop also surfaces here as (False, None);
-                # we just loop — no reconnect, no sleep. Plan 02 adds backoff.
+                        return
+                    delay = self._backoff.next_delay()
+                    _LOG.warning(
+                        "reconnect_attempt camera_id=%s attempt=%d "
+                        "delay_s=%.2f ceiling_s=%.2f err=%r",
+                        self.camera_id,
+                        self._backoff.attempt,
+                        delay,
+                        self._backoff.current_ceiling_s,
+                        exc,
+                        extra={"camera_id": self.camera_id},
+                    )
+                    # Interruptible sleep — stop_event.wait returns True as
+                    # soon as shutdown is requested so SIGINT exits fast
+                    # even during a 30-s backoff.
+                    if self.stop_event.wait(delay):
+                        return
+                    continue
+
+                _LOG.info(
+                    "reader_connected camera_id=%s attempt=%d",
+                    self.camera_id,
+                    self._backoff.attempt,
+                    extra={"camera_id": self.camera_id},
+                )
+
+                # Also emit the Plan 01-01 reader_started line on first open
+                # for backward-compatibility with 01-01 tests.
+                if self._backoff.attempt == 0:
+                    _LOG.info(
+                        "reader_started camera_id=%s target=%s is_file_source=%s",
+                        self.camera_id,
+                        self._sanitized_target(),
+                        is_file_source,
+                        extra={"camera_id": self.camera_id},
+                    )
+
+                # -------- Inner loop: read until failure or stop --------
+                while not self.stop_event.is_set():
+                    ok, frame = self.frame_source.read()
+                    if ok and frame is not None:
+                        self.queue.put((frame, time.monotonic()))
+                        # Opportunistic sustained-health reset: call after
+                        # every successful decode so 60 s of clean reads
+                        # resets the backoff to 1 s (CONTEXT D-07).
+                        self._backoff.reset_if_healthy(
+                            last_frame_monotonic=(
+                                self.frame_source.stats.last_frame_monotonic
+                            ),
+                            now=time.monotonic(),
+                        )
+                        continue
+                    # Read failed. Decide EOF vs. reconnect.
+                    if is_file_source:
+                        stats = self.frame_source.stats
+                        if stats.decode_errors > 0 and stats.frames_decoded > 0:
+                            _LOG.info(
+                                "reader_eof camera_id=%s frames_decoded=%d "
+                                "decode_errors=%d",
+                                self.camera_id,
+                                stats.frames_decoded,
+                                stats.decode_errors,
+                                extra={"camera_id": self.camera_id},
+                            )
+                            return
+                        # MP4 still starting up (post-open drop) — keep trying.
+                        continue
+                    # Live source: distinguish transient decode error from
+                    # an external release (watchdog fired). We consult the
+                    # FrameSource Protocol's ``is_open`` property only —
+                    # private capture attributes must never leak into this
+                    # file. Defaults to True via getattr so legacy stubs
+                    # that pre-date the Protocol extension still behave
+                    # like live sources (keep trying on decode error;
+                    # never exit except via stop_event).
+                    if not getattr(self.frame_source, "is_open", True):
+                        _LOG.warning(
+                            "reader_source_released_externally camera_id=%s",
+                            self.camera_id,
+                            extra={"camera_id": self.camera_id},
+                        )
+                        break  # outer loop will reopen
+                    # Otherwise: transient decode error; keep trying on the
+                    # same capture. Live RTSP never exits on a single
+                    # decode error (D-12 / CONTEXT §'New Facts' #2). Yield
+                    # briefly so we don't spin a CPU if the stub returns
+                    # False immediately.
+                    if self.stop_event.wait(0.001):
+                        return
         finally:
             try:
                 self.frame_source.release()

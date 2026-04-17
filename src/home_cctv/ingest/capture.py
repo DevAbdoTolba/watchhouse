@@ -80,6 +80,9 @@ class FrameSource(Protocol):
     stats: CaptureStats
     is_file_source: bool
 
+    @property
+    def is_open(self) -> bool: ...
+
     def open(self) -> None: ...
 
     def read(self) -> tuple[bool, Optional[np.ndarray]]: ...
@@ -102,6 +105,17 @@ class _BaseCvCapture:
         self._cap: Optional["cv2.VideoCapture"] = None
         self._frames_since_open: int = 0
         self.stats = CaptureStats()
+
+    # --------------------------------------------------------------- is_open
+    @property
+    def is_open(self) -> bool:
+        """True while a cv2.VideoCapture is held; flips False on release().
+
+        The StreamReader reads this after every failed read to distinguish a
+        transient decode error (still open, keep trying) from an externally
+        forced release by the watchdog (cap is None, must reconnect).
+        """
+        return self._cap is not None
 
     # ------------------------------------------------------------------ open
     def open(self) -> None:
