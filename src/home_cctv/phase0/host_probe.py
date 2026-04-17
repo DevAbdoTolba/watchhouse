@@ -145,10 +145,24 @@ def _decode_wsl_version_bytes(raw: bytes) -> str:
     """
     if not raw:
         return ""
-    # Strip BOM if present (UTF-8 or UTF-16).
+    # Strip byte-order marks (UTF-8 or UTF-16 LE/BE).
     if raw[:3] == b"\xef\xbb\xbf":
         raw = raw[3:]
-    looks_utf16 = b"\x00" in raw[:64] and len(raw) >= 2 and raw[1:2] == b"\x00"
+    elif raw[:2] == b"\xff\xfe":
+        raw = raw[2:]  # UTF-16-LE BOM
+    elif raw[:2] == b"\xfe\xff":
+        # UTF-16-BE BOM — decode directly.
+        try:
+            text = raw[2:].decode("utf-16-be", errors="replace")
+        except Exception:
+            text = raw[2:].decode("utf-8", errors="replace")
+        return text.lstrip("\ufeff").replace("\r", "").strip()
+    # Heuristic: BOM-less UTF-16-LE shows NUL on the odd bytes of ASCII text.
+    looks_utf16 = (
+        len(raw) >= 4
+        and raw[1:2] == b"\x00"
+        and raw[3:4] == b"\x00"
+    )
     if looks_utf16:
         try:
             text = raw.decode("utf-16-le", errors="replace")

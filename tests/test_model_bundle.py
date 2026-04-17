@@ -27,9 +27,14 @@ def test_verify_empty_cache_no_raise(tmp_path: Path) -> None:
     }
 
 
-def test_verify_after_touching_yolo(tmp_path: Path) -> None:
+def test_verify_after_touching_yolo(tmp_path: Path, monkeypatch) -> None:
     # Pre-populate an unverified lock so the "accept any non-zero size"
-    # path is exercised.
+    # path is exercised. We must also redirect WEIGHTS_LOCK_PATH to tmp so
+    # the real committed weights.lock.json (which now has verified:true,
+    # size_bytes=5.5 MB after the live sweep) does not fail the strict
+    # size check against the 100k synthetic file.
+    fake_lock = tmp_path / "weights.lock.json"
+    monkeypatch.setattr(model_bundle, "WEIGHTS_LOCK_PATH", fake_lock)
     target = tmp_path / "yolo26n.pt"
     target.write_bytes(b"\x00" * 100_000)
     v = verify_model_bundle(tmp_path)
