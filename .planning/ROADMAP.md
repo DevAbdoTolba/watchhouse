@@ -69,7 +69,7 @@
 
 **Plans**: 3 plans
 - [x] 01-01-PLAN.md — StreamReader threads + FrameQueue(maxlen=2) drop-oldest + CameraHeartbeat 30s structured emitter (ING-01, ING-04, ING-05, OPS-01)
-- [ ] 01-02-PLAN.md — JitteredBackoff + ReadWatchdog (cross-thread release) + StreamReader reconnect loop (ING-02, ING-03)
+- [x] 01-02-PLAN.md — JitteredBackoff + ReadWatchdog (cross-thread release) + StreamReader reconnect loop (ING-02, ING-03)
 - [ ] 01-03-PLAN.md — MainStreamGrabber (Semaphore(1) + 2s TTL) + IngestSupervisor composing 4 readers/watchdogs/heartbeats + grabber + --live CLI (ING-07, ING-08)
 **UI hint**: no
 

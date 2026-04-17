@@ -21,8 +21,8 @@
 ### Stream Ingest (ING)
 
 - [x] **ING-01**: User ingests all 4 camera sub-streams simultaneously over RTSP/TCP (`rtsp_transport=tcp`, `nobuffer`, `discardcorrupt`, `low_delay`) with no UDP fallback
-- [ ] **ING-02**: User's pipeline recovers automatically from a stalled `cv2.VideoCapture.read()` within 10 seconds via a per-camera watchdog that force-releases and reconnects the capture
-- [ ] **ING-03**: User's pipeline recovers from a 30-second DVR network outage: all 4 streams resume within 60 seconds without a process restart, with jittered exponential backoff (1s→2s→4s→8s→…→30s)
+- [x] **ING-02**: User's pipeline recovers automatically from a stalled `cv2.VideoCapture.read()` within 10 seconds via a per-camera watchdog that force-releases and reconnects the capture
+- [x] **ING-03**: User's pipeline recovers from a 30-second DVR network outage: all 4 streams resume within 60 seconds without a process restart, with jittered exponential backoff (1s→2s→4s→8s→…→30s)
 - [x] **ING-04**: User's pipeline skips green / partial / corrupted frames (bottom-row variance test) and drops the first 5 frames after every reconnect
 - [x] **ING-05**: User sees per-stream health/heartbeat in the logs (last successful read timestamp, FPS, drop rate)
 - [ ] **ING-06**: User can run the same pipeline against an offline MP4 file instead of RTSP for regression testing (`--mp4 path/to/file.mp4`)
