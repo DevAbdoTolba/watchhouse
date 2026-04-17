@@ -37,9 +37,29 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _reset_logger() -> None:
+    """Clear handlers + restore propagate=True so caplog works.
+
+    Phase 0 ``configure_logging`` sets propagate=False on the ``home_cctv``
+    logger tree to prevent double-output through the root. Earlier tests
+    (e.g. test_heartbeat) invoke it and the flag persists across tests,
+    which blocks caplog. Reset here so this module's caplog assertions are
+    isolated from test ordering.
+    """
     lg = logging.getLogger("home_cctv")
     for h in list(lg.handlers):
         lg.removeHandler(h)
+    lg.propagate = True
+    for name in ("home_cctv.ingest.stream_reader",):
+        sub = logging.getLogger(name)
+        for h in list(sub.handlers):
+            sub.removeHandler(h)
+        sub.propagate = True
+
+
+@pytest.fixture(autouse=True)
+def _ensure_logger_propagation() -> None:
+    """Reset the home_cctv logger state before each test in this module."""
+    _reset_logger()
 
 
 # ---------------------------------------------------------------- test stubs
