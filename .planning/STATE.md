@@ -33,20 +33,20 @@ progress:
 
 ## Current Position
 
-Phase: 0 (Environment & Sanity) — EXECUTING
-Plan: 1 of 3
+Phase: 1 (Multi-Stream Ingest & Reconnect) — READY TO PLAN
+Plan: none yet
 
-- **current_phase**: 0
-- **current_phase_name**: Environment & Sanity
+- **current_phase**: 1
+- **current_phase_name**: Multi-Stream Ingest & Reconnect
 - **current_plan**: none
 - **status**: ready
-- **progress**: 0%
+- **progress**: 20% (1 / 5 phases complete)
 
 ```
-[                    ] 0 / 5 phases complete
+[████                ] 1 / 5 phases complete
 ```
 
-**Next action**: `/gsd-plan-phase 0` to decompose Phase 0 (Environment & Sanity) into executable plans.
+**Next action**: `/gsd-discuss-phase 1` then `/gsd-plan-phase 1` to plan the 4-stream ingest + reconnect watchdog.
 
 ---
 
@@ -54,7 +54,7 @@ Plan: 1 of 3
 
 | # | Phase | Status | Plans |
 |---|---|---|---|
-| 0 | Environment & Sanity | Not started | 0/0 |
+| 0 | Environment & Sanity | ✅ Complete (2026-04-17) | 3/3 + patch |
 | 1 | Multi-Stream Ingest & Reconnect | Not started | 0/0 |
 | 2 | Detection, Tracking & Zoned Events | Not started | 0/0 |
 | 3 | Trigger & Catch Event Models | Not started | 0/0 |
@@ -66,8 +66,8 @@ Plan: 1 of 3
 
 *Populated as phases complete. Tracks plan/phase duration, rework rate, node-repair events, verifier bounces.*
 
-- **phases_completed**: 0 / 5
-- **plans_completed**: 0
+- **phases_completed**: 1 / 5
+- **plans_completed**: 3 (+ 1 patch)
 - **avg_plan_duration**: —
 - **node_repairs**: 0
 - **verifier_bounces**: 0
@@ -86,7 +86,8 @@ Plan: 1 of 3
 - **2026-04-13** — Concurrency model: 4 stream threads + 1 inference thread (NOT 4) + 1 main-stream grabber + 1 EventWriter + DeepFace subprocess + EasyOCR subprocess. No asyncio.
 - **2026-04-13** — SQLite + `EVENT_IMAGE_DIR` MUST live on WSL2 ext4, NEVER `/mnt/c/...` (DrvFs kills WAL).
 - **2026-04-13** — React dashboard deferred to a later milestone. v1 is operator-usable via SQLite + file browser.
-- **2026-04-16** — **Stack pivoted from CPU-only to GPU-primary.** User confirmed RTX 3060 Laptop (6 GB VRAM) is exposed to WSL2 via CUDA 12 passthrough (nvidia-smi inside WSL2 shows driver 561.09, CUDA 12.6). `torch` pinned to `2.5.1+cu121`, `tensorflow-cpu==2.16.2` → `tensorflow[and-cuda]==2.16.2`. OpenVINO and onnxruntime dropped from deps (CPU-only optimizations). All Phase 0 scaffolding code is unchanged — the pivot is purely at the dep-pin layer. `.venv` must be rebuilt (`rm -rf .venv && uv sync`) before the Phase 0 live sweep.
+- **2026-04-16** — **Stack pivoted from CPU-only to hybrid GPU+CPU.** User confirmed RTX 3060 Laptop (6 GB VRAM) is exposed to WSL2 via CUDA 12 passthrough (nvidia-smi inside WSL2 shows driver 561.09, CUDA 12.6). First pivot attempt used `tensorflow[and-cuda]==2.16.2` + `torch==2.5.1+cu121` — failed: both pull `nvidia-cublas-cu12` at incompatible versions (12.1.3.1 vs 12.3.4.1). Final decision: **hybrid split.** `torch==2.5.1+cu121` for YOLO + EasyOCR (continuous hot path, GPU-critical). `tensorflow-cpu==2.16.2` for DeepFace (trigger-only, ~10-50/day, CPU latency acceptable). OpenVINO and onnxruntime dropped from deps. All Phase 0 scaffolding code unchanged. `.venv` rebuilt via `rm -rf .venv && uv sync`.
+- **2026-04-17** — **Phase 0 complete.** Live 4-camera 2-hour sweep passed with clean decode (99.88% cam1, 99.95% cam2/3, 99.99% cam4). Phase 0 patch fixed 4 harness bugs (DeepFace RetinaFace API, DeepFace ArcFace cache verify path, `env_vars_loaded` reporting, `wsl_version` UTF-16 decode) + recalibrated exit criterion against real sub-stream rates (15/6/6/15 not main-stream 25/12/12/25). 86/86 tests passing. Real measured `cold_start_ms`: yolo_openvino=5951, deepface=3218, easyocr=775. `cameras.yaml` committed with sub-stream rates; Phase 1+ calibrates against those. **Known pending action:** User to switch WSL2 from NAT → mirrored networking (current 3415 ms RTSP handshake latency will strain Phase 1 reconnect watchdog). Doc at `D:\Projects\obsidian\claude\notes\WSL2-Mirrored-Networking-Setup.md`.
 
 ### Active TODOs
 
@@ -104,16 +105,18 @@ _(none — Phase 0 will burn down the empirical blockers)_
 
 ## Session Continuity
 
-**Last session**: 2026-04-13 — roadmap created
-**Next session entry point**: `/gsd-plan-phase 0`
+**Last session**: 2026-04-17 — Phase 0 completed and patched
+**Next session entry point**: `/gsd-discuss-phase 1`
 
 Resume instructions for a fresh Claude context:
 
-1. Read `.planning/PROJECT.md` for core value and constraints
-2. Read `.planning/ROADMAP.md` for phase structure
-3. Read `.planning/REQUIREMENTS.md` → Traceability table for REQ→phase mapping
-4. Read `.planning/research/SUMMARY.md` §6 (empirical blockers) and §7 (build order) before touching Phase 0
-5. Current phase is 0; status is `ready`; no plan has been drafted yet
+1. Read `.planning/PROJECT.md` for core value and constraints (amended 2026-04-16 for GPU pivot; 2026-04-13 for Vue→React)
+2. Read `.planning/ROADMAP.md` for phase structure (5 phases, Phase 0 complete)
+3. Read `.planning/REQUIREMENTS.md` → Traceability table for REQ→phase mapping (63 REQs; ENV-01..05 and ING-06 complete)
+4. Read `.planning/phases/00-environment-sanity/PHASE0-REPORT.json` for real-host measurements (DVR latency, CPU cores, RAM, cold-start times per model)
+5. Read `.planning/phases/00-environment-sanity/00-99-phase0-patch-SUMMARY.md` for the patch deviations
+6. Read `.planning/research/SUMMARY.md` §6 (empirical blockers answered) and §7 (phase build order)
+7. Current phase is 1 (Multi-Stream Ingest & Reconnect); no plan drafted yet; user may still need to flip WSL2 networking to mirrored before Phase 1 begins
 
 ---
-*Last updated: 2026-04-13 by gsd-roadmapper*
+*Last updated: 2026-04-17 after Phase 0 completion and patch*
