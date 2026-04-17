@@ -167,13 +167,10 @@ def test_stream_reader_is_not_alive_after_join() -> None:
     assert reader.is_alive() is False
 
 
-def test_stream_reader_uses_per_camera_logger_prefix(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_stream_reader_uses_per_camera_logger_prefix(tmp_path: Path) -> None:
     """Reader log lines must carry the bracketed ``[cam0:mp4]`` prefix."""
     _reset_logger()
     configure_logging(tmp_path)
-    caplog.set_level(logging.INFO, logger="home_cctv")
 
     fs = Mp4FrameSource(
         str(FIXTURES / "sample_720p25.mp4"), source_id="cam0:mp4"
@@ -185,17 +182,14 @@ def test_stream_reader_uses_per_camera_logger_prefix(
     reader.start()
     reader.join(timeout=10.0)
     assert not reader.is_alive()
+    # Flush handlers so rotating file handler writes to disk.
+    for h in logging.getLogger("home_cctv").handlers:
+        h.flush()
 
-    # Find the reader_started log record and confirm camera_id is attached.
-    matching = [
-        r
-        for r in caplog.records
-        if "reader_started" in r.getMessage()
-        and getattr(r, "camera_id", None) == "cam0:mp4"
-    ]
-    assert matching, (
-        "expected at least one reader_started record tagged with camera_id=cam0:mp4; "
-        f"got: {[r.getMessage() for r in caplog.records]}"
+    log_file = Path(tmp_path).resolve() / "home_cctv.log"
+    text = log_file.read_text(encoding="utf-8")
+    assert "[cam0:mp4] reader_started" in text, (
+        f"expected bracketed camera prefix on reader_started line; got:\n{text}"
     )
 
 
