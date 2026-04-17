@@ -31,6 +31,21 @@ WEIGHTS_LOCK_PATH: Path = (
     Path(__file__).resolve().parents[3] / "weights.lock.json"
 )
 
+# Canonical DeepFace weights cache — both ArcFace and RetinaFace drop their
+# ``.h5`` files here when DeepFace / retina-face build_model() succeeds. The
+# verifier checks this canonical location directly rather than relying on a
+# marker copy inside MODEL_CACHE_DIR — the marker-copy approach failed
+# silently in the original harness when one of the two downloads aborted
+# (2026-04-17 patch, Bug 2).
+DEEPFACE_WEIGHTS_DIR: Path = Path.home() / ".deepface" / "weights"
+DEEPFACE_ARCFACE_FILE: Path = DEEPFACE_WEIGHTS_DIR / "arcface_weights.h5"
+DEEPFACE_RETINAFACE_FILE: Path = DEEPFACE_WEIGHTS_DIR / "retinaface.h5"
+# Byte-size floors: ArcFace is ~137 MB, RetinaFace is ~107 MB. Floors are
+# generous (100 MB / 80 MB) to avoid false negatives if the upstream file
+# changes slightly, while still rejecting truncated or zero-byte downloads.
+_ARCFACE_MIN_BYTES: int = 100_000_000
+_RETINAFACE_MIN_BYTES: int = 80_000_000
+
 # Canonical weight entries. Kept here so the schema is the single source of
 # truth for both ``persist_weights_lock`` and ``verify_model_bundle``.
 _WEIGHT_ENTRIES: tuple[str, ...] = (
@@ -123,6 +138,27 @@ def persist_weights_lock(bundle: Dict[str, Any]) -> Path:
     return WEIGHTS_LOCK_PATH
 
 
+def _deepface_file_cached(path: Path, min_bytes: int) -> bool:
+    """Return True if ``path`` exists in ``~/.deepface/weights/`` with size ≥
+    ``min_bytes``.
+
+    2026-04-17 patch (Bug 2): the original verifier only checked for a marker
+    file inside ``MODEL_CACHE_DIR``. On partial failures (e.g. ArcFace
+    download succeeds, RetinaFace's ``build_model`` then raises an exception
+    because the task/model_name call convention was wrong) the marker file
+    for ArcFace was never copied either, so a valid cached weight reported
+    ``deepface_arcface_cached: false``. DeepFace / retina-face libraries
+    always download to the canonical ``~/.deepface/weights/`` directory;
+    checking that location directly is the source of truth.
+    """
+    try:
+        if not path.exists() or not path.is_file():
+            return False
+        return path.stat().st_size >= min_bytes
+    except OSError:
+        return False
+
+
 def verify_model_bundle(cache_dir: Path) -> Dict[str, Any]:
     """Check the cache against ``weights.lock.json``.
 
@@ -150,7 +186,31 @@ def verify_model_bundle(cache_dir: Path) -> Dict[str, Any]:
             return actual > 0
         return actual == expected
 
+    # DeepFace weights live in ``~/.deepface/weights/`` by library convention.
+    # The legacy marker-copy inside ``MODEL_CACHE_DIR`` is also accepted so
+    # offline / sandboxed test environments keep working.
+    arcface_cached = _deepface_file_cached(
+        DEEPFACE_ARCFACE_FILE, _ARCFACE_MIN_BYTES
+    ) or _cached("deepface_arcface")
+    retinaface_cached = _deepface_file_cached(
+        DEEPFACE_RETINAFACE_FILE, _RETINAFACE_MIN_BYTES
+    ) or _cached("deepface_retinaface")
+
     total_bytes = sum(_entry_size(cache_dir, n) for n in _WEIGHT_ENTRIES)
+    # When the canonical DeepFace weights live in ``~/.deepface/weights/``
+    # instead of a marker copy, fold their real byte sizes into the total so
+    # the report's ``total_weights_size_mb`` reflects the actual bundle cost.
+    if arcface_cached and _entry_size(cache_dir, "deepface_arcface") == 0:
+        try:
+            total_bytes += DEEPFACE_ARCFACE_FILE.stat().st_size
+        except OSError:
+            pass
+    if retinaface_cached and _entry_size(cache_dir, "deepface_retinaface") == 0:
+        try:
+            total_bytes += DEEPFACE_RETINAFACE_FILE.stat().st_size
+        except OSError:
+            pass
+
     cold = lock.get("cold_start_ms") or {}
     cold_out = _zero_cold_start()
     for k in _COLD_START_KEYS:
@@ -160,8 +220,8 @@ def verify_model_bundle(cache_dir: Path) -> Dict[str, Any]:
         "yolo26n_pt_cached": _cached("yolo26n.pt"),
         "yolov8n_pt_cached": _cached("yolov8n.pt"),
         "yolo_openvino_export_cached": _cached("yolo26n_openvino_model"),
-        "deepface_arcface_cached": _cached("deepface_arcface"),
-        "deepface_retinaface_cached": _cached("deepface_retinaface"),
+        "deepface_arcface_cached": arcface_cached,
+        "deepface_retinaface_cached": retinaface_cached,
         "easyocr_english_cached": _cached("easyocr_english"),
         "total_weights_size_mb": round(total_bytes / (1024 * 1024), 2),
         "cold_start_ms": cold_out,
@@ -295,13 +355,37 @@ def download_model_bundle(cache_dir: Path) -> Dict[str, Any]:
         _LOG.warning("ultralytics unavailable: %r", exc)
 
     # --- DeepFace: ArcFace + RetinaFace ---
-    deepface_dir = Path.home() / ".deepface" / "weights"
+    # 2026-04-17 patch (Bug 1): RetinaFace is a DETECTOR, not a recognition
+    # model. The DeepFace.build_model() two-arg form (model_name, task) is
+    # the only supported API; passing ``retinaface`` without ``task`` defaults
+    # to ``task="facial_recognition"`` and raises
+    # ``UnimplementedError('Invalid model_name passed -
+    # facial_recognition/retinaface')``. That aborted the whole deepface
+    # block in the original harness, so RetinaFace was never downloaded AND
+    # the ArcFace marker copy never happened either. Fix: each build_model
+    # call is wrapped in its OWN try/except with the correct ``task``.
+    deepface_dir = DEEPFACE_WEIGHTS_DIR
     try:
         from deepface import DeepFace  # type: ignore
 
         _LOG.info("building deepface models (auto-download to ~/.deepface/weights)")
-        DeepFace.build_model("ArcFace")
-        DeepFace.build_model("retinaface")
+        # ArcFace: facial_recognition task (the default, but pass explicitly
+        # so the call survives if DeepFace ever changes the default).
+        try:
+            DeepFace.build_model("ArcFace", task="facial_recognition")
+        except Exception as exc:
+            _LOG.warning("deepface ArcFace build_model failed: %r", exc)
+        # RetinaFace: MUST pass task="face_detector". Without this the call
+        # raises UnimplementedError because 'retinaface' is not a
+        # facial_recognition model name.
+        try:
+            DeepFace.build_model("retinaface", task="face_detector")
+        except Exception as exc:
+            _LOG.warning("deepface RetinaFace build_model failed: %r", exc)
+        # Copy canonical weights into cache_dir as a marker for backward
+        # compatibility with the existing ``weights.lock.json`` schema. The
+        # verifier now ALSO checks ``~/.deepface/weights/`` directly so this
+        # copy is belt-and-braces (Bug 2).
         for marker_name, pattern in (
             ("deepface_arcface", "arcface_weights.h5"),
             ("deepface_retinaface", "retinaface.h5"),
@@ -309,7 +393,15 @@ def download_model_bundle(cache_dir: Path) -> Dict[str, Any]:
             candidates = list(deepface_dir.glob(pattern)) if deepface_dir.exists() else []
             dest = cache_dir / marker_name
             if candidates:
-                shutil.copy2(candidates[0], dest)
+                try:
+                    shutil.copy2(candidates[0], dest)
+                except OSError as exc:
+                    _LOG.warning(
+                        "deepface marker copy failed %s -> %s: %r",
+                        candidates[0],
+                        dest,
+                        exc,
+                    )
     except Exception as exc:
         _LOG.warning("deepface download failed: %r", exc)
 
@@ -348,6 +440,9 @@ def download_model_bundle(cache_dir: Path) -> Dict[str, Any]:
 
 __all__ = [
     "WEIGHTS_LOCK_PATH",
+    "DEEPFACE_WEIGHTS_DIR",
+    "DEEPFACE_ARCFACE_FILE",
+    "DEEPFACE_RETINAFACE_FILE",
     "download_model_bundle",
     "warmup_model_bundle",
     "verify_model_bundle",
