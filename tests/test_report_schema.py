@@ -73,7 +73,21 @@ def test_write_and_read_roundtrip(tmp_path: Path) -> None:
     assert loaded.to_dict() == r.to_dict()
 
 
-def _cam(id_: int, name: str, fps: int, nal: bool = False) -> CameraConfig:
+def _cam(
+    id_: int,
+    name: str,
+    fps: int,
+    nal: bool = False,
+    sub_fps: int | None = None,
+) -> CameraConfig:
+    """Build a CameraConfig whose SUB-stream fps governs exit criteria.
+
+    2026-04-17 patch: exit criteria key off ``advertised_sub_fps``. For test
+    helpers we default ``sub_stream_fps = fps`` so a caller passing
+    ``fps=25`` exercises a 25-fps exit threshold (the pre-patch behaviour).
+    Callers wanting to emulate the real main-vs-sub split (25 main / 15 sub)
+    pass ``sub_fps`` explicitly.
+    """
     return CameraConfig(
         id=id_,
         name=name,
@@ -83,6 +97,8 @@ def _cam(id_: int, name: str, fps: int, nal: bool = False) -> CameraConfig:
         main_path="/0",
         codec="hevc",
         native_fps=fps,
+        main_stream_fps=fps,
+        sub_stream_fps=sub_fps if sub_fps is not None else fps,
         native_width=1280,
         native_height=720,
         nal_unit_0_workaround_required=nal,

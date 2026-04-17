@@ -77,9 +77,17 @@ def _collect_env_vars_loaded(settings: Settings) -> list[str]:
 
 
 def per_camera_exit_ok(cam: CameraConfig, c: CameraResult) -> bool:
-    """Enforce CONTEXT.md §"Per-camera exit criteria" verbatim."""
-    lo = cam.native_fps * (1 - _FPS_TOLERANCE)
-    hi = cam.native_fps * (1 + _FPS_TOLERANCE)
+    """Enforce CONTEXT.md §"Per-camera exit criteria" verbatim.
+
+    2026-04-17 patch: the FPS target is now the SUB-stream advertised rate
+    (``cam.advertised_sub_fps``), not the main-stream ``native_fps``. Phase
+    0 ingests /1, /11, /21, /31 — the DVR halves the frame rate on those
+    paths. Real measurements from the 2-hour sweep are 15/6/6/15 fps
+    (sub) vs the 25/12/12/25 advertised main-stream rates.
+    """
+    target = cam.advertised_sub_fps
+    lo = target * (1 - _FPS_TOLERANCE)
+    hi = target * (1 + _FPS_TOLERANCE)
     if not (lo <= c.measured_fps <= hi):
         return False
     if c.hang_events != 0:
@@ -113,7 +121,9 @@ def _capture_one(
         sub_path=cam.sub_path,
         main_path=cam.main_path,
         codec=cam.codec,
-        advertised_fps=cam.native_fps,
+        # advertised_fps records the SUB-stream target (Phase 0 ingests
+        # /1, /11, /21, /31 — half the main-stream rate). 2026-04-17 patch.
+        advertised_fps=cam.advertised_sub_fps,
         measured_fps=0.0,
         width=cam.native_width,
         height=cam.native_height,

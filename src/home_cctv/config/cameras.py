@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from home_cctv.config.env import Settings
 
@@ -24,7 +24,17 @@ class CameraConfig(BaseModel):
     sub_path: str
     main_path: str
     codec: Literal["hevc", "h264"]
+    # FPS fields. ``native_fps`` is the legacy key (equivalent to
+    # ``main_stream_fps`` — the camera's main-stream hardware rate).
+    # ``main_stream_fps`` + ``sub_stream_fps`` are the 2026-04-17 patch that
+    # disambiguates the two: sub-stream is the rate we actually ingest at
+    # /1, /11, /21, /31, which the DVR halves relative to main-stream. Exit
+    # criteria and ByteTracker frame_rate MUST use ``sub_stream_fps``.
+    # If only ``native_fps`` is provided, ``main_stream_fps`` defaults to it
+    # and ``sub_stream_fps`` defaults to ``max(1, native_fps // 2)``.
     native_fps: int
+    main_stream_fps: Optional[int] = None
+    sub_stream_fps: Optional[int] = None
     native_width: int
     native_height: int
     sensor_native: Optional[str] = None
@@ -32,6 +42,24 @@ class CameraConfig(BaseModel):
     nal_unit_0_workaround_required: bool = False
     known_hazard: Optional[str] = None
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _fill_stream_fps_defaults(self) -> "CameraConfig":
+        # main_stream_fps falls back to legacy native_fps.
+        if self.main_stream_fps is None:
+            object.__setattr__(self, "main_stream_fps", self.native_fps)
+        # sub_stream_fps falls back to main_stream_fps // 2, floor 1.
+        if self.sub_stream_fps is None:
+            main = self.main_stream_fps or self.native_fps
+            object.__setattr__(
+                self, "sub_stream_fps", max(1, int(main) // 2)
+            )
+        return self
+
+    @property
+    def advertised_sub_fps(self) -> int:
+        """Canonical target FPS for sub-stream exit criteria (Bug fix 2026-04-17)."""
+        return int(self.sub_stream_fps or max(1, self.native_fps // 2))
 
 
 class DvrConfig(BaseModel):
