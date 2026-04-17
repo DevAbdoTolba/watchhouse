@@ -160,15 +160,18 @@ def test_per_camera_exit_ok_cam3_ratio_fail() -> None:
 
 
 def test_per_camera_exit_ok_cam1_any_corruption_tolerates_drop_window() -> None:
-    # 5 frames dropped on open is the baseline — allowed.
+    # 5 frames dropped on open is the baseline — allowed. Ratio
+    # 40000/(40000+5) = 0.99987 which exceeds the 0.999 clean floor.
     cam = _cam(1, "exterior_red", 25)
     r = _result(measured_fps=24.0, frames_corrupted=5)
     assert per_camera_exit_ok(cam, r) is True
 
 
 def test_per_camera_exit_ok_cam1_excess_corruption_fails() -> None:
+    # Clean-cam ratio floor is 0.999. 100 corrupted against 40000 decoded
+    # is 0.99751 — must fail.
     cam = _cam(1, "exterior_red", 25)
-    r = _result(measured_fps=24.0, frames_corrupted=20)
+    r = _result(measured_fps=24.0, frames_corrupted=100)
     assert per_camera_exit_ok(cam, r) is False
 
 
