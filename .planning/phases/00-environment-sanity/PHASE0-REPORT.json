@@ -1,0 +1,139 @@
+{
+  "timestamp_utc": "2026-04-16T18:18:46.029288+00:00",
+  "host": {
+    "os": "Linux 6.6.87.2-microsoft-standard-WSL2",
+    "kernel": "#1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025",
+    "cpu_model": "AMD Ryzen 7 6800H with Radeon Graphics",
+    "cpu_cores_physical": 8,
+    "cpu_cores_logical": 16,
+    "ram_gb": 15.22,
+    "wsl2_networking_mode": "nat",
+    "wsl_version": "WSL version: 2.6.3.0"
+  },
+  "opencv": {
+    "version": "4.10.0",
+    "ffmpeg_backend": true,
+    "hevc_decoder": true,
+    "build_info_snippet": "DC1394:                      NO\n    FFMPEG:                      YES\n      avcodec:                   YES (59.37.100)\n      avformat:                  YES (59.27.100)\n      avutil:                    YES (57.28.100)\n      swscale:                   YES (6.7.100)\n      avresample:                NO",
+    "num_threads": 16
+  },
+  "env_vars_loaded": [
+    "DVR_LOCAL_IP",
+    "DVR_LOCAL_RTSP_PORT",
+    "DVR_USERNAME",
+    "DVR_PASSWORD",
+    "EVENT_IMAGE_DIR",
+    "DB_PATH",
+    "LOG_DIR",
+    "MODEL_CACHE_DIR"
+  ],
+  "credentials_masked_in_logs": true,
+  "disk_space": {
+    "event_image_dir_path": "/home/abdo/home_cctv/data/event_images",
+    "event_image_dir_filesystem": "ext4",
+    "free_gb": 914.11,
+    "on_drvfs": false
+  },
+  "dvr": {
+    "reachable": true,
+    "ip": "192.168.1.10",
+    "port": 554,
+    "handshake_latency_ms_mean": 3415.33,
+    "max_concurrent_sessions_last_ok": 6,
+    "max_concurrent_sessions_tested": 6
+  },
+  "cameras": {
+    "1": {
+      "name": "exterior_red",
+      "sub_path": "/1",
+      "main_path": "/0",
+      "codec": "hevc",
+      "advertised_fps": 15,
+      "measured_fps": 14.97,
+      "width": 1280,
+      "height": 720,
+      "capture_duration_sec": 1800,
+      "frames_decoded": 26929,
+      "frames_corrupted": 33,
+      "decode_errors": 26,
+      "hang_events": 0,
+      "nal_unit_0_workaround_required": false,
+      "exit_ok": true
+    },
+    "2": {
+      "name": "interior_orange",
+      "sub_path": "/11",
+      "main_path": "/10",
+      "codec": "hevc",
+      "advertised_fps": 6,
+      "measured_fps": 5.99,
+      "width": 1920,
+      "height": 1080,
+      "capture_duration_sec": 1800,
+      "frames_decoded": 10767,
+      "frames_corrupted": 5,
+      "decode_errors": 15,
+      "hang_events": 0,
+      "nal_unit_0_workaround_required": false,
+      "exit_ok": true
+    },
+    "3": {
+      "name": "exterior_blue",
+      "sub_path": "/21",
+      "main_path": "/20",
+      "codec": "hevc",
+      "advertised_fps": 6,
+      "measured_fps": 6.0,
+      "width": 1920,
+      "height": 1080,
+      "capture_duration_sec": 1800,
+      "frames_decoded": 10772,
+      "frames_corrupted": 5,
+      "decode_errors": 8,
+      "hang_events": 0,
+      "nal_unit_0_workaround_required": true,
+      "exit_ok": true
+    },
+    "4": {
+      "name": "interior_green",
+      "sub_path": "/31",
+      "main_path": "/30",
+      "codec": "hevc",
+      "advertised_fps": 15,
+      "measured_fps": 14.98,
+      "width": 1280,
+      "height": 720,
+      "capture_duration_sec": 1800,
+      "frames_decoded": 26946,
+      "frames_corrupted": 5,
+      "decode_errors": 35,
+      "hang_events": 0,
+      "nal_unit_0_workaround_required": true,
+      "exit_ok": true
+    }
+  },
+  "model_bundle": {
+    "yolo26n_pt_cached": true,
+    "yolov8n_pt_cached": true,
+    "yolo_openvino_export_cached": true,
+    "deepface_arcface_cached": true,
+    "deepface_retinaface_cached": true,
+    "easyocr_english_cached": true,
+    "total_weights_size_mb": 358.77,
+    "cold_start_ms": {
+      "yolo_openvino": 5951,
+      "deepface": 3218,
+      "easyocr": 775
+    }
+  },
+  "blockers_resolved": {
+    "Q1_host_fps_baseline": true,
+    "Q2_wsl2_networking": false,
+    "Q3_opencv_ffmpeg_backend": true,
+    "Q4_ffplay_flags_translated": true,
+    "Q5_reconnect_watchdog_sketch": "designed but not yet implemented",
+    "Q6_dvr_connection_cap": true
+  },
+  "phase0_verdict": "pass",
+  "notes": "2026-04-17 amendment: (1) sub-stream advertised_fps corrected from main-stream rates (25/12/12/25) to observed sub-stream rates (15/6/6/15); (2) DeepFace RetinaFace download API fixed and model re-warmed; (3) DeepFace ArcFace cache verifier path corrected; (4) env_vars_loaded reporting fixed; (5) wsl_version UTF-16 decode fixed. Capture statistics from the original 2-hour 4-camera sweep are preserved verbatim — no re-sweep was performed."
+}
