@@ -14,8 +14,8 @@
 
 ## Phases
 
-- [ ] **Phase 0: Environment & Sanity** — Verify the real host can actually reach, read, and decode one DVR stream end-to-end before any pipeline work begins
-- [ ] **Phase 1: Multi-Stream Ingest & Reconnect** — Pull all 4 sub-streams in parallel over RTSP/TCP and survive DVR outages without a restart
+- [x] **Phase 0: Environment & Sanity** — Verify the real host can actually reach, read, and decode one DVR stream end-to-end before any pipeline work begins
+- [x] **Phase 1: Multi-Stream Ingest & Reconnect** — Pull all 4 sub-streams in parallel over RTSP/TCP and survive DVR outages without a restart
 - [ ] **Phase 2: Detection, Tracking & Zoned Events** — Run YOLO+ByteTrack continuously on all 4 streams, evaluate polygon zones, and persist events to SQLite
 - [ ] **Phase 3: Trigger & Catch Event Models** — Fire DeepFace, EasyOCR, vehicle-interaction, and loitering events from tracker state using on-demand main-stream grabs
 - [ ] **Phase 4: Hardening & Operations** — Retention, emergency-mode, metrics, worker supervision, offline MP4 mode, clean shutdown
@@ -70,7 +70,7 @@
 **Plans**: 3 plans
 - [x] 01-01-PLAN.md — StreamReader threads + FrameQueue(maxlen=2) drop-oldest + CameraHeartbeat 30s structured emitter (ING-01, ING-04, ING-05, OPS-01)
 - [x] 01-02-PLAN.md — JitteredBackoff + ReadWatchdog (cross-thread release) + StreamReader reconnect loop (ING-02, ING-03)
-- [ ] 01-03-PLAN.md — MainStreamGrabber (Semaphore(1) + 2s TTL) + IngestSupervisor composing 4 readers/watchdogs/heartbeats + grabber + --live CLI (ING-07, ING-08)
+- [x] 01-03-PLAN.md — MainStreamGrabber (Semaphore(1) + 2s TTL) + IngestSupervisor composing 4 readers/watchdogs/heartbeats + grabber + --live CLI (ING-07, ING-08)
 **UI hint**: no
 
 ---
@@ -161,11 +161,11 @@ The v1 pipeline is usable via SQLite + file browser; none of these block operato
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 0. Environment & Sanity | 0/0 | Not started | - |
-| 1. Multi-Stream Ingest & Reconnect | 0/0 | Not started | - |
+| 0. Environment & Sanity | 3/3 + patch | ✅ Complete | 2026-04-17 |
+| 1. Multi-Stream Ingest & Reconnect | 3/3 | ✅ Complete | 2026-04-17 |
 | 2. Detection, Tracking & Zoned Events | 0/0 | Not started | - |
 | 3. Trigger & Catch Event Models | 0/0 | Not started | - |
 | 4. Hardening & Operations | 0/0 | Not started | - |
 
 ---
-*Last updated: 2026-04-13 by gsd-roadmapper*
+*Last updated: 2026-04-17 after Phase 1 Plan 01-03 completion (Phase 1 CLOSED)*
