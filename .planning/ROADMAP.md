@@ -67,7 +67,10 @@
   4. User inspects the live `cam_queue[i]` state and sees drop-oldest semantics on `deque(maxlen=2)` — the slow inference path never back-pressures a stream reader, and the first 5 frames after every reconnect are skipped to drop green/partial slices.
   5. User issues a one-off "grab main-stream frame for camera 2" request and sees exactly one short-lived `VideoCapture` open on the main stream, one JPEG saved, one release, with a 2-second TTL cache preventing double-opens — and a global semaphore proving only one main-stream open at a time across all cameras, so the DVR connection cap is never tripped.
 
-**Plans**: TBD
+**Plans**: 3 plans
+- [ ] 01-01-PLAN.md — StreamReader threads + FrameQueue(maxlen=2) drop-oldest + CameraHeartbeat 30s structured emitter (ING-01, ING-04, ING-05, OPS-01)
+- [ ] 01-02-PLAN.md — JitteredBackoff + ReadWatchdog (cross-thread release) + StreamReader reconnect loop (ING-02, ING-03)
+- [ ] 01-03-PLAN.md — MainStreamGrabber (Semaphore(1) + 2s TTL) + IngestSupervisor composing 4 readers/watchdogs/heartbeats + grabber + --live CLI (ING-07, ING-08)
 **UI hint**: no
 
 ---
