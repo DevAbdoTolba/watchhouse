@@ -58,9 +58,31 @@ def _collect_env_vars_loaded(settings: Settings) -> list[str]:
 
     Iterates the Settings → alias table and for each canonical field whose
     Settings value is non-empty, records the FIRST alias that is present
-    in ``os.environ`` (preferring the canonical name when both are set).
+    in either ``os.environ`` OR the ``.env`` file (via dotenv_values).
     Passwords are listed by env-var name only; no values leak.
+
+    pydantic-settings reads ``.env`` directly into Settings without
+    exporting the keys to ``os.environ``, so we must inspect the dotfile
+    explicitly for the user's legacy-vocabulary case (DVR_USERNAME,
+    DVR_LOCAL_IP, ...). Falls back to os.environ-only detection if the
+    dotfile is absent or unreadable.
     """
+    dotenv_keys: set[str] = set()
+    try:
+        from dotenv import dotenv_values  # type: ignore
+
+        env_file = getattr(settings.model_config, "get", lambda *_: None)(
+            "env_file"
+        )
+        if env_file is None:
+            env_file = settings.model_config.get("env_file", ".env") if isinstance(
+                settings.model_config, dict
+            ) else ".env"
+        values = dotenv_values(env_file)
+        dotenv_keys = {k for k, v in values.items() if v not in (None, "")}
+    except Exception:
+        dotenv_keys = set()
+
     loaded: list[str] = []
     for field_name, aliases in _SETTINGS_FIELD_ENV_ALIASES.items():
         try:
@@ -70,7 +92,7 @@ def _collect_env_vars_loaded(settings: Settings) -> list[str]:
         if value in (None, "", 0):
             continue
         for alias in aliases:
-            if os.environ.get(alias):
+            if os.environ.get(alias) or alias in dotenv_keys:
                 loaded.append(alias)
                 break
     return loaded

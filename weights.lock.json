@@ -1,14 +1,37 @@
 {
-  "_note": "Weight bundle manifest. Populated by phase0.model_bundle.download_model_bundle() -> persist_weights_lock() on first successful run. Commit after first pass so subsequent startups verify cache integrity. The `cold_start_ms` block is also filled in by the same call, via warmup_model_bundle().",
-  "pending_download": true,
+  "_note": "Weight bundle manifest. Populated by phase0.model_bundle.download_model_bundle() -> persist_weights_lock() on first successful run.",
   "cache_root": "$HOME/.cache/home_cctv/models",
   "weights": {
-    "yolo26n.pt": { "size_bytes": 0, "verified": false },
-    "yolov8n.pt": { "size_bytes": 0, "verified": false },
-    "yolo26n_openvino_model": { "size_bytes": 0, "verified": false, "is_directory": true },
-    "deepface_arcface": { "size_bytes": 0, "verified": false },
-    "deepface_retinaface": { "size_bytes": 0, "verified": false },
-    "easyocr_english": { "size_bytes": 0, "verified": false, "is_directory": true }
+    "yolo26n.pt": {
+      "size_bytes": 5544453,
+      "verified": true
+    },
+    "yolov8n.pt": {
+      "size_bytes": 6549796,
+      "verified": true
+    },
+    "yolo26n_openvino_model": {
+      "size_bytes": 10112054,
+      "verified": true,
+      "is_directory": true
+    },
+    "deepface_arcface": {
+      "size_bytes": 137026640,
+      "verified": true
+    },
+    "deepface_retinaface": {
+      "size_bytes": 118667368,
+      "verified": true
+    },
+    "easyocr_english": {
+      "size_bytes": 98296327,
+      "verified": true,
+      "is_directory": true
+    }
   },
-  "cold_start_ms": { "yolo_openvino": 0, "deepface": 0, "easyocr": 0 }
+  "cold_start_ms": {
+    "yolo_openvino": 5951,
+    "deepface": 3218,
+    "easyocr": 775
+  }
 }
