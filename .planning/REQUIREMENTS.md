@@ -20,11 +20,11 @@
 
 ### Stream Ingest (ING)
 
-- [ ] **ING-01**: User ingests all 4 camera sub-streams simultaneously over RTSP/TCP (`rtsp_transport=tcp`, `nobuffer`, `discardcorrupt`, `low_delay`) with no UDP fallback
+- [x] **ING-01**: User ingests all 4 camera sub-streams simultaneously over RTSP/TCP (`rtsp_transport=tcp`, `nobuffer`, `discardcorrupt`, `low_delay`) with no UDP fallback
 - [ ] **ING-02**: User's pipeline recovers automatically from a stalled `cv2.VideoCapture.read()` within 10 seconds via a per-camera watchdog that force-releases and reconnects the capture
 - [ ] **ING-03**: User's pipeline recovers from a 30-second DVR network outage: all 4 streams resume within 60 seconds without a process restart, with jittered exponential backoff (1s→2s→4s→8s→…→30s)
-- [ ] **ING-04**: User's pipeline skips green / partial / corrupted frames (bottom-row variance test) and drops the first 5 frames after every reconnect
-- [ ] **ING-05**: User sees per-stream health/heartbeat in the logs (last successful read timestamp, FPS, drop rate)
+- [x] **ING-04**: User's pipeline skips green / partial / corrupted frames (bottom-row variance test) and drops the first 5 frames after every reconnect
+- [x] **ING-05**: User sees per-stream health/heartbeat in the logs (last successful read timestamp, FPS, drop rate)
 - [ ] **ING-06**: User can run the same pipeline against an offline MP4 file instead of RTSP for regression testing (`--mp4 path/to/file.mp4`)
 - [ ] **ING-07**: User's main-stream captures are opened on demand for a single frame on trigger, then released — never held open continuously — with a short (~2 s) TTL cache for burst triggers on the same camera
 - [ ] **ING-08**: User's concurrent main-stream opens are serialized via a single global semaphore so DVR connection caps are not exceeded
@@ -94,7 +94,7 @@
 
 ### Operations (OPS)
 
-- [ ] **OPS-01**: User sees structured rotating logs with per-camera prefixes, event summaries, and credential masking (`rtsp://user:***@host`)
+- [x] **OPS-01**: User sees structured rotating logs with per-camera prefixes, event summaries, and credential masking (`rtsp://user:***@host`)
 - [ ] **OPS-02**: User's pipeline writes a metrics JSON file (`frames_dropped`, `triggers_fired`, `triggers_dropped`, `events_written`, per-camera FPS, CPU %) every 30 seconds
 - [ ] **OPS-03**: User's subprocess workers (FaceWorker, PlateWorker) are supervised: death is detected within 5 seconds and the worker is respawned; in-flight work is lost cleanly
 - [ ] **OPS-04**: User's pipeline exits cleanly on SIGINT/SIGTERM — all threads joined, all captures released, all DB rows flushed, no zombie subprocesses
