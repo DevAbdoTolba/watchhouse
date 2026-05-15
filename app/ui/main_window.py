@@ -24,6 +24,7 @@ from app.core.ip_cache import load as load_ip_cache, record_hit as record_ip_hit
 from app.core.log import bus
 from app.core.playback_probe import PlaybackProbeWorker
 from app.core.probe import ProbeWorker
+from app.core.recorder import RecorderSupervisor
 from app.ui.camera_tile import CameraTile
 from app.ui.console_panel import ConsolePanel
 
@@ -35,14 +36,15 @@ class MainWindow(QMainWindow):
         self._probe: ProbeWorker | None = None
         self._discovery: DiscoveryWorker | None = None
         self._pbprobe: PlaybackProbeWorker | None = None
+        self._recorder: RecorderSupervisor | None = None
         self.setWindowTitle("Watchhouse")
         self.setMinimumSize(880, 560)
         self._size_to_screen()
 
-        cameras = default_cameras()
+        self._cameras = default_cameras()
 
         toolbar = self._build_toolbar()
-        grid_widget, self._tiles = self._build_grid(cameras, settings)
+        grid_widget, self._tiles = self._build_grid(self._cameras, settings)
         status_bar = self._build_status_bar(settings)
 
         central = QWidget(self)
@@ -173,11 +175,15 @@ class MainWindow(QMainWindow):
         spacer = QWidget(bar)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
+        self._status_recorder = QLabel("REC: off", bar)
+        self._status_recorder.setObjectName("StatusBarText")
+
         self._status_clock = QLabel("", bar)
         self._status_clock.setObjectName("StatusBarText")
 
         layout.addWidget(self._status_dvr)
         layout.addWidget(spacer)
+        layout.addWidget(self._status_recorder)
         layout.addWidget(self._status_clock)
         return bar
 
@@ -194,9 +200,15 @@ class MainWindow(QMainWindow):
         # Kick off DVR probe shortly after the window has painted, so the
         # log entries appear in the console if the user opens it.
         QTimer.singleShot(400, self._run_probe)
+        # Start the recorder a moment after the live streams so they don't
+        # race the DVR's connection cap.
+        if self._settings.recording_enabled:
+            QTimer.singleShot(1500, self._start_recorder)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._refresh_clock.stop()
+        if self._recorder is not None:
+            self._recorder.stop(wait_ms=5000)
         for tile in self._tiles:
             tile.shutdown(wait_ms=2000)
         if self._probe is not None and self._probe.isRunning():
@@ -277,6 +289,22 @@ class MainWindow(QMainWindow):
             tile.apply_settings(self._settings)
         persist_dvr_ip(self._settings, result.found_ip)
         record_ip_hit(self._settings.env_path, result.found_ip)
+
+    def _start_recorder(self) -> None:
+        if self._recorder is not None:
+            return
+        self._recorder = RecorderSupervisor(self._settings, self._cameras, parent=self)
+        self._recorder.stats_changed.connect(self._on_recorder_stats)
+        self._recorder.start()
+
+    def _on_recorder_stats(self, segments: int, total_bytes: int, active: int) -> None:
+        if active == 0 and segments == 0:
+            self._status_recorder.setText("REC: off")
+            return
+        gb = total_bytes / 1024 / 1024 / 1024
+        self._status_recorder.setText(
+            f"REC: {active}/{len(self._cameras)} cams  {segments} clips  {gb:.2f} GB"
+        )
 
     def _update_status_bar(self) -> None:
         from datetime import datetime

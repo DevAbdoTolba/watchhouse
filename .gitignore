@@ -53,9 +53,10 @@ _*.ps1
 shot*.png
 screenshot*.png
 
-# Runtime data (event store)
+# Runtime data (event store, recorded clips)
 data/
 recordings/
+clips/
 
 # Skill manager (keep skill source, ignore caches if any)
 .agents/.cache/

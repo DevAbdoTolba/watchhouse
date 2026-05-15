@@ -55,6 +55,9 @@ def main() -> int:
         "--clean",
         "--collect-binaries=cv2",
         "--collect-data=cv2",
+        # Recorder needs the bundled ffmpeg executable from imageio-ffmpeg.
+        "--collect-binaries=imageio_ffmpeg",
+        "--collect-data=imageio_ffmpeg",
         f"--paths={ROOT}",
         # numpy.random.bit_generator imports `secrets` from a Cython module,
         # which PyInstaller's static analysis cannot see.

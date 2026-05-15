@@ -65,6 +65,12 @@ class Settings:
     dvr_pass: str
     cam_defaults: tuple[str, str, str, str]
     env_path: Path | None
+    # Recording
+    recording_enabled: bool
+    recording_dir: Path
+    recording_stream: str          # "sub" | "main"
+    recording_segment_minutes: int  # default 30
+    recording_retention_days: int   # default 7
 
     @classmethod
     def load(cls) -> "Settings":
@@ -76,6 +82,10 @@ class Settings:
             tried = ", ".join(str(d) for d in _candidate_dirs())
             bus.warn("CFG", f"no .env found. Searched: {tried}")
             bus.warn("CFG", "DVR credentials will fall back to defaults; streams will likely fail.")
+
+        # Recording dir defaults to <env_dir>/recordings, or cwd/recordings in dev
+        rec_dir_default = (env_path.parent if env_path else Path.cwd()) / "recordings"
+        rec_dir = Path(os.environ.get("RECORDING_DIR", str(rec_dir_default)))
 
         s = cls(
             dvr_ip=os.environ.get("DVR_IP", "192.168.1.10"),
@@ -89,11 +99,22 @@ class Settings:
                 _norm(os.environ.get("CAM4_DEFAULT", "sub")),
             ),
             env_path=env_path,
+            recording_enabled=_truthy(os.environ.get("RECORDING_ENABLED", "1")),
+            recording_dir=rec_dir,
+            recording_stream=_norm(os.environ.get("RECORDING_STREAM", "sub")),
+            recording_segment_minutes=int(os.environ.get("RECORDING_SEGMENT_MINUTES", "30")),
+            recording_retention_days=int(os.environ.get("RECORDING_RETENTION_DAYS", "7")),
         )
         bus.info(
             "CFG",
             f"settings: dvr={s.dvr_ip}:{s.dvr_port} user={s.dvr_user} "
             f"pass={'set' if s.dvr_pass else 'EMPTY'} defaults={s.cam_defaults}",
+        )
+        bus.info(
+            "CFG",
+            f"recording: enabled={s.recording_enabled} stream={s.recording_stream} "
+            f"segment={s.recording_segment_minutes}min retention={s.recording_retention_days}d "
+            f"dir={s.recording_dir}",
         )
         return s
 
@@ -101,6 +122,10 @@ class Settings:
 def _norm(value: str) -> str:
     v = value.strip().lower()
     return v if v in ("sub", "main") else "sub"
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def with_dvr_ip(settings: "Settings", new_ip: str) -> "Settings":
