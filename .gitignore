@@ -40,6 +40,12 @@ Desktop.ini
 *.log
 logs/
 
+# Local dev scratch (debug helpers, screenshots)
+_*.py
+_*.ps1
+shot*.png
+screenshot*.png
+
 # Runtime data (event store)
 data/
 recordings/

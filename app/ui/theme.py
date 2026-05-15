@@ -44,6 +44,10 @@ QMainWindow, QWidget {{
     background: {INK};
 }}
 
+QLabel {{
+    background: transparent;
+}}
+
 QToolTip {{
     background: {SURFACE_2};
     color: {TEXT};
@@ -65,9 +69,7 @@ QToolTip {{
 }}
 
 #BrandSeparator {{
-    color: {TEXT_DIM};
-    font-size: 13px;
-    font-weight: 300;
+    background: {BORDER_2};
 }}
 
 #Version {{
@@ -77,22 +79,27 @@ QToolTip {{
     letter-spacing: 0.08em;
 }}
 
-#ToolbarAction {{
-    background: transparent;
+QPushButton#ToolbarAction {{
+    background-color: {SURFACE};
     border: 1px solid {BORDER_2};
     border-radius: 2px;
-    color: {TEXT_MUTED};
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.06em;
-    padding: 6px 14px;
-}}
-#ToolbarAction:hover {{
-    border-color: {ACCENT};
     color: {TEXT};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.10em;
+    padding: 0 18px;
+    min-height: 28px;
+    min-width: 140px;
 }}
-#ToolbarAction:pressed {{
-    background: {ACCENT_BG};
+QPushButton#ToolbarAction:hover {{
+    background-color: {ACCENT_BG};
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+QPushButton#ToolbarAction:pressed {{
+    background-color: {ACCENT_BG};
+    border-color: {ACCENT};
+    color: {ACCENT};
 }}
 
 #Grid {{

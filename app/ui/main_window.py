@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -26,8 +27,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = settings
         self.setWindowTitle("CCTV Console")
-        self.setMinimumSize(1024, 640)
-        self.resize(1360, 820)
+        self.setMinimumSize(880, 560)
+        self._size_to_screen()
 
         cameras = default_cameras()
 
@@ -50,6 +51,22 @@ class MainWindow(QMainWindow):
 
     # Build
 
+    def _size_to_screen(self) -> None:
+        """Pick a default size that fits the user's screen, then center it.
+
+        Caps at 1280x760 on big screens, shrinks to 92% of available
+        geometry on small ones (avoids the window opening half-offscreen
+        on 1366x768 laptops with DPI scaling).
+        """
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        w = min(1280, int(screen.width() * 0.92))
+        h = min(760, int(screen.height() * 0.92))
+        self.resize(w, h)
+        self.move(
+            screen.left() + (screen.width() - w) // 2,
+            screen.top() + (screen.height() - h) // 2,
+        )
+
     def _build_toolbar(self) -> QWidget:
         bar = QWidget(self)
         bar.setObjectName("Toolbar")
@@ -60,24 +77,24 @@ class MainWindow(QMainWindow):
 
         brand = QLabel("CCTV CONSOLE", bar)
         brand.setObjectName("Brand")
-        sep = QLabel("/", bar)
-        sep.setObjectName("BrandSeparator")
+
         version = QLabel(f"v{__version__}", bar)
         version.setObjectName("Version")
 
         spacer = QWidget(bar)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        reconnect = QPushButton("RECONNECT ALL", bar)
-        reconnect.setObjectName("ToolbarAction")
-        reconnect.setCursor(Qt.CursorShape.PointingHandCursor)
-        reconnect.clicked.connect(self._reconnect_all)
+        self._reconnect_btn = QPushButton("RECONNECT ALL", bar)
+        self._reconnect_btn.setObjectName("ToolbarAction")
+        self._reconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reconnect_btn.setMinimumHeight(30)
+        self._reconnect_btn.setMinimumWidth(140)
+        self._reconnect_btn.clicked.connect(self._reconnect_all)
 
         layout.addWidget(brand)
-        layout.addWidget(sep)
         layout.addWidget(version)
         layout.addWidget(spacer)
-        layout.addWidget(reconnect)
+        layout.addWidget(self._reconnect_btn)
         return bar
 
     def _build_grid(self, cameras, settings: Settings) -> tuple[QWidget, list[CameraTile]]:

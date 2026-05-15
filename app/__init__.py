@@ -16,4 +16,4 @@ os.environ.setdefault(
     "|probesize;2000000",
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"

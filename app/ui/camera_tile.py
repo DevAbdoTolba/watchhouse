@@ -28,6 +28,8 @@ class StatusDot(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(self.SIZE + 4, self.SIZE + 4)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self._status = "offline"
 
     @Slot(str)
@@ -109,6 +111,10 @@ class CameraTile(QFrame):
         super().__init__(parent)
         self.setObjectName("CameraTile")
         self.setFrameShape(QFrame.Shape.NoFrame)
+        # Without explicit Expanding, the tile inherits Preferred and the
+        # grid hands it sizeHint width instead of column-stretch width,
+        # which leaves the right column squished.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._camera = camera
         self._settings = settings
         self._current = default_stream if default_stream in ("sub", "main") else "sub"
@@ -132,6 +138,10 @@ class CameraTile(QFrame):
 
         location = QLabel(camera.location, header)
         location.setObjectName("TileLocation")
+        # Don't let the location text dictate the column width; if the tile
+        # narrows, the label squishes (and clips) before the column stretches.
+        location.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        location.setMinimumWidth(0)
 
         spacer = QWidget(header)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
