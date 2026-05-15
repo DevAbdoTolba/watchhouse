@@ -19,12 +19,14 @@ class ProbeWorker(QThread):
         super().__init__(parent)
         self._settings = settings
 
+    TCP_TIMEOUT_S = 2.0
+
     def run(self) -> None:
         s = self._settings
         bus.info("PROBE", f"Probing DVR at {s.dvr_ip}:{s.dvr_port}")
         t0 = time.monotonic()
         try:
-            with socket.create_connection((s.dvr_ip, s.dvr_port), timeout=4.0) as sock:
+            with socket.create_connection((s.dvr_ip, s.dvr_port), timeout=self.TCP_TIMEOUT_S) as sock:
                 elapsed = (time.monotonic() - t0) * 1000
                 bus.info("PROBE", f"TCP connect OK in {elapsed:.0f} ms")
                 # Speak RTSP DESCRIBE to see if anything answers
@@ -44,7 +46,11 @@ class ProbeWorker(QThread):
                 bus.info("PROBE", f"RTSP OPTIONS reply in {rtt:.0f} ms: {first_line}")
                 self.finished_with.emit(True, first_line)
         except socket.timeout:
-            bus.error("PROBE", f"TCP connect to {s.dvr_ip}:{s.dvr_port} TIMED OUT (4s). DVR unreachable on this network.")
+            bus.error(
+                "PROBE",
+                f"TCP connect to {s.dvr_ip}:{s.dvr_port} TIMED OUT "
+                f"({self.TCP_TIMEOUT_S:.0f}s). DVR unreachable on this network.",
+            )
             self.finished_with.emit(False, "timeout")
         except OSError as e:
             bus.error("PROBE", f"TCP connect failed: {e!s}")

@@ -20,6 +20,7 @@ from app import __version__
 from app.core.cameras import default_cameras
 from app.core.config import Settings, persist_dvr_ip, with_dvr_ip
 from app.core.discovery import DiscoveryResult, DiscoveryWorker
+from app.core.ip_cache import load as load_ip_cache, record_hit as record_ip_hit
 from app.core.log import bus
 from app.core.probe import ProbeWorker
 from app.ui.camera_tile import CameraTile
@@ -199,9 +200,7 @@ class MainWindow(QMainWindow):
     def _reconnect_all(self) -> None:
         bus.info("APP", "user requested RECONNECT ALL")
         for tile in self._tiles:
-            tile.shutdown(wait_ms=500)
-        for tile in self._tiles:
-            tile.start()
+            tile.reconnect()
 
     def _toggle_console(self) -> None:
         self._console.setVisible(not self._console.isVisible())
@@ -218,7 +217,10 @@ class MainWindow(QMainWindow):
         self._probe.start()
 
     def _on_probe_done(self, ok: bool, _summary: str) -> None:
-        if not ok:
+        if ok:
+            # Configured IP works; refresh its position in the IP cache.
+            record_ip_hit(self._settings.env_path, self._settings.dvr_ip)
+        else:
             bus.info("APP", "probe failed; auto-running discovery on local subnet")
             self._run_discovery()
 
@@ -226,7 +228,14 @@ class MainWindow(QMainWindow):
         if self._discovery is not None and self._discovery.isRunning():
             bus.info("DISC", "discovery already in progress")
             return
-        self._discovery = DiscoveryWorker(self._settings.dvr_port, parent=self)
+        cached = load_ip_cache(self._settings.env_path)
+        # MRU first; exclude the IP we already proved unreachable in the probe
+        priority = tuple(r.ip for r in cached if r.ip != self._settings.dvr_ip)
+        self._discovery = DiscoveryWorker(
+            self._settings.dvr_port,
+            priority_ips=priority,
+            parent=self,
+        )
         self._discovery.completed.connect(self._on_discovery_done)
         self._discover_btn.setEnabled(False)
         self._discovery.start()
@@ -245,6 +254,7 @@ class MainWindow(QMainWindow):
         for tile in self._tiles:
             tile.apply_settings(self._settings)
         persist_dvr_ip(self._settings, result.found_ip)
+        record_ip_hit(self._settings.env_path, result.found_ip)
 
     def _update_status_bar(self) -> None:
         from datetime import datetime

@@ -46,6 +46,19 @@ class StreamWorker(QThread):
             self._stop = True
             self._reopen = True  # break inner read loop too
 
+    def request_reopen(self) -> None:
+        """Soft reconnect: drop the current cap and reopen the same URL.
+
+        Cheaper than stopping the thread and creating a new worker, and the
+        natural fit for the RECONNECT ALL button on a healthy stream that's
+        merely stalled.
+        """
+        with QMutexLocker(self._mutex):
+            if self._stop:
+                return
+            self._reopen = True
+        bus.info(self._label, "reopen requested")
+
     def run(self) -> None:
         bus.info(self._label, f"worker started for {mask_url(self._url)}")
         backoff = self.INITIAL_BACKOFF_S

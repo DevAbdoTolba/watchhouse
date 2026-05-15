@@ -166,10 +166,16 @@ class CameraTile(QFrame):
         outer.addWidget(header)
         outer.addWidget(self._video, 1)
 
-        # Worker
+        # Worker (created lazily-recreateable via _build_worker so RECONNECT
+        # ALL can recover after the QThread has terminated; QThread can't be
+        # start()-ed twice).
+        self._worker: StreamWorker | None = None
+        self._build_worker()
+
+    def _build_worker(self) -> None:
         self._worker = StreamWorker(
-            camera.url(self._current, settings),
-            label=f"CAM{camera.index}",
+            self._camera.url(self._current, self._settings),
+            label=f"CAM{self._camera.index}",
             parent=self,
         )
         self._worker.frame_ready.connect(self._video.set_frame)
@@ -178,17 +184,43 @@ class CameraTile(QFrame):
     # Public
 
     def start(self) -> None:
+        assert self._worker is not None
+        if self._worker.isRunning():
+            return
+        if self._worker.isFinished():
+            # QThread is single-shot; replace it before starting.
+            self._build_worker()
         self._worker.start()
 
     def shutdown(self, wait_ms: int = 3000) -> None:
+        if self._worker is None:
+            return
         self._worker.request_stop()
         self._worker.wait(wait_ms)
+
+    def reconnect(self) -> None:
+        """Smart reconnect.
+
+        If the worker thread is alive, send it a soft `request_reopen`
+        (drops the current cap and re-opens the URL inside the same thread).
+        If it's already terminated, fully recreate the worker thread and
+        start it.
+        """
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.request_reopen()
+            return
+        self._build_worker()
+        self._worker.start()
 
     def apply_settings(self, settings: Settings) -> None:
         """Swap the active settings (typically when DVR IP changed)
         and live-switch the worker URL without restart."""
         self._settings = settings
-        self._worker.set_url(self._camera.url(self._current, settings))
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.set_url(self._camera.url(self._current, settings))
+        else:
+            # Worker not alive; just rebuild against the new settings on next start.
+            self._build_worker()
 
     # Internal
 

@@ -93,11 +93,33 @@ def _speaks_rtsp(ip: str, port: int, timeout: float = RTSP_PROBE_TIMEOUT) -> boo
 class DiscoveryWorker(QThread):
     completed = Signal(DiscoveryResult)
 
-    def __init__(self, port: int, parent=None) -> None:
+    def __init__(self, port: int, priority_ips: tuple[str, ...] = (), parent=None) -> None:
         super().__init__(parent)
         self._port = port
+        self._priority = tuple(dict.fromkeys(priority_ips))  # de-dupe, keep order
 
     def run(self) -> None:
+        t0 = time.monotonic()
+
+        # Fast path: parallel-probe last-known-good IPs (MRU first). If one
+        # of them still answers RTSP, return immediately, no /24 scan.
+        if self._priority:
+            bus.info("DISC", f"checking {len(self._priority)} cached IP(s) first: {', '.join(self._priority)}")
+            hit = self._race_priority()
+            if hit is not None:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                bus.info("DISC", f"cached IP {hit} still valid (resolved in {elapsed_ms:.0f} ms)")
+                self.completed.emit(
+                    DiscoveryResult(
+                        found_ip=hit,
+                        candidates_probed=len(self._priority),
+                        rtsp_hosts=(hit,),
+                        elapsed_ms=elapsed_ms,
+                    )
+                )
+                return
+            bus.info("DISC", "no cached IP responded; falling back to /24 scan")
+
         prefix = detect_local_prefix()
         if prefix is None:
             bus.error("DISC", "could not detect local subnet (no LAN connection?)")
@@ -105,7 +127,6 @@ class DiscoveryWorker(QThread):
             return
 
         bus.info("DISC", f"scanning {prefix}.0/24 on port {self._port}")
-        t0 = time.monotonic()
         ips = [f"{prefix}.{i}" for i in range(1, 255)]
 
         open_hosts: list[str] = []
@@ -152,3 +173,23 @@ class DiscoveryWorker(QThread):
                 elapsed_ms=elapsed_ms,
             )
         )
+
+    def _race_priority(self) -> str | None:
+        """Probe priority IPs in parallel; return the first that speaks RTSP."""
+        with ThreadPoolExecutor(max_workers=max(1, len(self._priority))) as ex:
+            futures = {ex.submit(self._priority_check, ip): ip for ip in self._priority}
+            for fut in as_completed(futures):
+                ip = futures[fut]
+                try:
+                    if fut.result():
+                        return ip
+                except Exception:
+                    pass
+        return None
+
+    def _priority_check(self, ip: str) -> bool:
+        # Slightly more generous timeouts than a /24 scan; the cached IP
+        # really should respond, so wait long enough to be sure.
+        if not _tcp_open(ip, self._port, timeout=1.0):
+            return False
+        return _speaks_rtsp(ip, self._port, timeout=1.5)
