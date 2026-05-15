@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -101,3 +101,45 @@ class Settings:
 def _norm(value: str) -> str:
     v = value.strip().lower()
     return v if v in ("sub", "main") else "sub"
+
+
+def with_dvr_ip(settings: "Settings", new_ip: str) -> "Settings":
+    """Return a new Settings instance with `dvr_ip` swapped."""
+    return replace(settings, dvr_ip=new_ip)
+
+
+def persist_dvr_ip(settings: "Settings", new_ip: str) -> bool:
+    """Write `DVR_IP=<new_ip>` into the .env that was loaded at startup.
+
+    Returns True on success. If no .env was loaded (env_path is None) or
+    the file is missing, returns False and logs the reason. Other lines
+    in the file are preserved verbatim.
+    """
+    path = settings.env_path
+    if path is None or not path.is_file():
+        bus.warn("CFG", f"cannot persist DVR_IP; no writable .env (env_path={path})")
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        bus.error("CFG", f"failed to read .env for update: {e!s}")
+        return False
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _ = stripped.split("=", 1)
+        if key.strip() == "DVR_IP":
+            lines[i] = f"DVR_IP={new_ip}"
+            found = True
+            break
+    if not found:
+        lines.append(f"DVR_IP={new_ip}")
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as e:
+        bus.error("CFG", f"failed to write .env: {e!s}")
+        return False
+    bus.info("CFG", f"persisted DVR_IP={new_ip} to {path}")
+    return True

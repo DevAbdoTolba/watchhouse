@@ -184,6 +184,12 @@ class CameraTile(QFrame):
         self._worker.request_stop()
         self._worker.wait(wait_ms)
 
+    def apply_settings(self, settings: Settings) -> None:
+        """Swap the active settings (typically when DVR IP changed)
+        and live-switch the worker URL without restart."""
+        self._settings = settings
+        self._worker.set_url(self._camera.url(self._current, settings))
+
     # Internal
 
     @Slot(bool)

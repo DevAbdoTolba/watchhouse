@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (
 
 from app import __version__
 from app.core.cameras import default_cameras
-from app.core.config import Settings
+from app.core.config import Settings, persist_dvr_ip, with_dvr_ip
+from app.core.discovery import DiscoveryResult, DiscoveryWorker
 from app.core.log import bus
 from app.core.probe import ProbeWorker
 from app.ui.camera_tile import CameraTile
@@ -30,6 +31,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = settings
         self._probe: ProbeWorker | None = None
+        self._discovery: DiscoveryWorker | None = None
         self.setWindowTitle("CCTV Console")
         self.setMinimumSize(880, 560)
         self._size_to_screen()
@@ -97,6 +99,12 @@ class MainWindow(QMainWindow):
         self._probe_btn.setMinimumHeight(30)
         self._probe_btn.clicked.connect(self._run_probe)
 
+        self._discover_btn = QPushButton("DISCOVER", bar)
+        self._discover_btn.setObjectName("ToolbarAction")
+        self._discover_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._discover_btn.setMinimumHeight(30)
+        self._discover_btn.clicked.connect(self._run_discovery)
+
         self._console_btn = QPushButton("CONSOLE", bar)
         self._console_btn.setObjectName("ToolbarAction")
         self._console_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -115,6 +123,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(version)
         layout.addWidget(spacer)
         layout.addWidget(self._probe_btn)
+        layout.addWidget(self._discover_btn)
         layout.addWidget(self._console_btn)
         layout.addWidget(self._reconnect_btn)
         return bar
@@ -147,8 +156,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 0, 20, 0)
         layout.setSpacing(20)
 
-        left = QLabel(f"DVR {settings.dvr_ip}:{settings.dvr_port}  user {settings.dvr_user}", bar)
-        left.setObjectName("StatusBarText")
+        self._status_dvr = QLabel(self._dvr_status_text(settings), bar)
+        self._status_dvr.setObjectName("StatusBarText")
 
         spacer = QWidget(bar)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -156,10 +165,14 @@ class MainWindow(QMainWindow):
         self._status_clock = QLabel("", bar)
         self._status_clock.setObjectName("StatusBarText")
 
-        layout.addWidget(left)
+        layout.addWidget(self._status_dvr)
         layout.addWidget(spacer)
         layout.addWidget(self._status_clock)
         return bar
+
+    @staticmethod
+    def _dvr_status_text(settings: Settings) -> str:
+        return f"DVR {settings.dvr_ip}:{settings.dvr_port}  user {settings.dvr_user}"
 
     # Lifecycle
 
@@ -177,6 +190,8 @@ class MainWindow(QMainWindow):
             tile.shutdown(wait_ms=2000)
         if self._probe is not None and self._probe.isRunning():
             self._probe.wait(2000)
+        if self._discovery is not None and self._discovery.isRunning():
+            self._discovery.wait(3000)
         super().closeEvent(event)
 
     # Actions
@@ -199,7 +214,37 @@ class MainWindow(QMainWindow):
             bus.info("PROBE", "probe already running; ignoring re-trigger")
             return
         self._probe = ProbeWorker(self._settings, parent=self)
+        self._probe.finished_with.connect(self._on_probe_done)
         self._probe.start()
+
+    def _on_probe_done(self, ok: bool, _summary: str) -> None:
+        if not ok:
+            bus.info("APP", "probe failed; auto-running discovery on local subnet")
+            self._run_discovery()
+
+    def _run_discovery(self) -> None:
+        if self._discovery is not None and self._discovery.isRunning():
+            bus.info("DISC", "discovery already in progress")
+            return
+        self._discovery = DiscoveryWorker(self._settings.dvr_port, parent=self)
+        self._discovery.completed.connect(self._on_discovery_done)
+        self._discover_btn.setEnabled(False)
+        self._discovery.start()
+
+    def _on_discovery_done(self, result: DiscoveryResult) -> None:
+        self._discover_btn.setEnabled(True)
+        if result.found_ip is None:
+            bus.warn("APP", "discovery finished with no DVR found")
+            return
+        if result.found_ip == self._settings.dvr_ip:
+            bus.info("APP", f"discovered IP {result.found_ip} matches current; nothing to update")
+            return
+        bus.info("APP", f"switching DVR IP {self._settings.dvr_ip} -> {result.found_ip}")
+        self._settings = with_dvr_ip(self._settings, result.found_ip)
+        self._status_dvr.setText(self._dvr_status_text(self._settings))
+        for tile in self._tiles:
+            tile.apply_settings(self._settings)
+        persist_dvr_ip(self._settings, result.found_ip)
 
     def _update_status_bar(self) -> None:
         from datetime import datetime
