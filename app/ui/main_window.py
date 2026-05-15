@@ -22,6 +22,7 @@ from app.core.config import Settings, persist_dvr_ip, with_dvr_ip
 from app.core.discovery import DiscoveryResult, DiscoveryWorker
 from app.core.ip_cache import load as load_ip_cache, record_hit as record_ip_hit
 from app.core.log import bus
+from app.core.playback_probe import PlaybackProbeWorker
 from app.core.probe import ProbeWorker
 from app.ui.camera_tile import CameraTile
 from app.ui.console_panel import ConsolePanel
@@ -33,6 +34,7 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._probe: ProbeWorker | None = None
         self._discovery: DiscoveryWorker | None = None
+        self._pbprobe: PlaybackProbeWorker | None = None
         self.setWindowTitle("Watchhouse")
         self.setMinimumSize(880, 560)
         self._size_to_screen()
@@ -106,6 +108,13 @@ class MainWindow(QMainWindow):
         self._discover_btn.setMinimumHeight(30)
         self._discover_btn.clicked.connect(self._run_discovery)
 
+        self._pbprobe_btn = QPushButton("PROBE PLAYBACK", bar)
+        self._pbprobe_btn.setObjectName("ToolbarAction")
+        self._pbprobe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pbprobe_btn.setMinimumHeight(30)
+        self._pbprobe_btn.setToolTip("Try common DVR playback protocols and report what works in the log console")
+        self._pbprobe_btn.clicked.connect(self._run_pbprobe)
+
         self._console_btn = QPushButton("CONSOLE", bar)
         self._console_btn.setObjectName("ToolbarAction")
         self._console_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -125,6 +134,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(spacer)
         layout.addWidget(self._probe_btn)
         layout.addWidget(self._discover_btn)
+        layout.addWidget(self._pbprobe_btn)
         layout.addWidget(self._console_btn)
         layout.addWidget(self._reconnect_btn)
         return bar
@@ -223,6 +233,18 @@ class MainWindow(QMainWindow):
         else:
             bus.info("APP", "probe failed; auto-running discovery on local subnet")
             self._run_discovery()
+
+    def _run_pbprobe(self) -> None:
+        if self._pbprobe is not None and self._pbprobe.isRunning():
+            bus.info("PBPROBE", "playback probe already running; ignoring re-trigger")
+            return
+        self._pbprobe = PlaybackProbeWorker(self._settings, parent=self)
+        self._pbprobe_btn.setEnabled(False)
+        self._pbprobe.finished_with.connect(lambda _r: self._pbprobe_btn.setEnabled(True))
+        self._pbprobe.start()
+        # Open the console so the user actually sees what the probe finds
+        if not self._console.isVisible():
+            self._console.show()
 
     def _run_discovery(self) -> None:
         if self._discovery is not None and self._discovery.isRunning():
