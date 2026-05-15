@@ -1,6 +1,6 @@
 [project]
 name = "watchhouse"
-version = "0.2.0"
+version = "0.3.0"
 description = "Watchhouse - a local AI surveillance platform for legacy DVRs. Live 4-camera view with auto-discovery, segment-recording of all four streams, AI event detection on the roadmap. Windows-native, single executable."
 requires-python = ">=3.11,<3.13"
 authors = [{ name = "Abdo Tolba" }]

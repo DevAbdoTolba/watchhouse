@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -27,6 +28,7 @@ from app.core.probe import ProbeWorker
 from app.core.recorder import RecorderSupervisor
 from app.ui.camera_tile import CameraTile
 from app.ui.console_panel import ConsolePanel
+from app.ui.playback_view import PlaybackView
 
 
 class MainWindow(QMainWindow):
@@ -44,7 +46,12 @@ class MainWindow(QMainWindow):
         self._cameras = default_cameras()
 
         toolbar = self._build_toolbar()
-        grid_widget, self._tiles = self._build_grid(self._cameras, settings)
+        live_widget, self._tiles = self._build_grid(self._cameras, settings)
+        self._playback_view = PlaybackView(self._cameras, settings, parent=self)
+        self._stack = QStackedWidget(self)
+        self._stack.addWidget(live_widget)
+        self._stack.addWidget(self._playback_view)
+        self._stack.setCurrentIndex(0)
         status_bar = self._build_status_bar(settings)
 
         central = QWidget(self)
@@ -52,7 +59,7 @@ class MainWindow(QMainWindow):
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)
         cv.addWidget(toolbar)
-        cv.addWidget(grid_widget, 1)
+        cv.addWidget(self._stack, 1)
         cv.addWidget(status_bar)
         self.setCentralWidget(central)
 
@@ -95,6 +102,24 @@ class MainWindow(QMainWindow):
         version = QLabel(f"v{__version__}", bar)
         version.setObjectName("Version")
 
+        # LIVE / PLAYBACK mode toggle
+        self._mode_live_btn = QPushButton("LIVE", bar)
+        self._mode_live_btn.setObjectName("ModeToggle")
+        self._mode_live_btn.setCheckable(True)
+        self._mode_live_btn.setChecked(True)
+        self._mode_live_btn.setMinimumHeight(30)
+        self._mode_live_btn.setMinimumWidth(82)
+        self._mode_live_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mode_live_btn.clicked.connect(lambda: self._set_mode("live"))
+
+        self._mode_pb_btn = QPushButton("PLAYBACK", bar)
+        self._mode_pb_btn.setObjectName("ModeToggle")
+        self._mode_pb_btn.setCheckable(True)
+        self._mode_pb_btn.setMinimumHeight(30)
+        self._mode_pb_btn.setMinimumWidth(82)
+        self._mode_pb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mode_pb_btn.clicked.connect(lambda: self._set_mode("playback"))
+
         spacer = QWidget(bar)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
@@ -133,6 +158,9 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(brand)
         layout.addWidget(version)
+        layout.addSpacing(20)
+        layout.addWidget(self._mode_live_btn)
+        layout.addWidget(self._mode_pb_btn)
         layout.addWidget(spacer)
         layout.addWidget(self._probe_btn)
         layout.addWidget(self._discover_btn)
@@ -140,6 +168,28 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._console_btn)
         layout.addWidget(self._reconnect_btn)
         return bar
+
+    def _set_mode(self, mode: str) -> None:
+        if mode == "live":
+            self._mode_live_btn.setChecked(True)
+            self._mode_pb_btn.setChecked(False)
+            self._stack.setCurrentIndex(0)
+            self._reconnect_btn.setVisible(True)
+            self._probe_btn.setVisible(True)
+            self._discover_btn.setVisible(True)
+            self._pbprobe_btn.setVisible(True)
+            bus.info("APP", "switched to LIVE mode")
+        else:
+            self._mode_live_btn.setChecked(False)
+            self._mode_pb_btn.setChecked(True)
+            self._stack.setCurrentIndex(1)
+            # Hide live-only actions while in playback to keep the bar tidy
+            self._reconnect_btn.setVisible(False)
+            self._probe_btn.setVisible(False)
+            self._discover_btn.setVisible(False)
+            self._pbprobe_btn.setVisible(False)
+            self._playback_view.refresh_library()
+            bus.info("APP", "switched to PLAYBACK mode")
 
     def _build_grid(self, cameras, settings: Settings) -> tuple[QWidget, list[CameraTile]]:
         wrap = QWidget(self)
@@ -211,6 +261,7 @@ class MainWindow(QMainWindow):
             self._recorder.stop(wait_ms=5000)
         for tile in self._tiles:
             tile.shutdown(wait_ms=2000)
+        self._playback_view.shutdown()
         if self._probe is not None and self._probe.isRunning():
             self._probe.wait(2000)
         if self._discovery is not None and self._discovery.isRunning():

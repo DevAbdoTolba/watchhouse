@@ -209,4 +209,103 @@ QPlainTextEdit#ConsoleView {{
     selection-background-color: {ACCENT};
     selection-color: {INK};
 }}
+
+/* --- v0.3.0 playback --- */
+
+QPushButton#ModeToggle {{
+    background-color: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT_MUTED};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    padding: 0 12px;
+}}
+QPushButton#ModeToggle:hover {{
+    border-color: {TEXT_MUTED};
+    color: {TEXT};
+}}
+QPushButton#ModeToggle:checked {{
+    background-color: {ACCENT_BG};
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+
+#PlaybackSidebar {{
+    background: {INK};
+}}
+#SidebarHeading {{
+    color: {TEXT_MUTED};
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    padding-bottom: 2px;
+    border-bottom: 1px solid {BORDER};
+}}
+
+QCalendarWidget#PlaybackCalendar QWidget {{
+    background: {SURFACE};
+    color: {TEXT};
+}}
+QCalendarWidget#PlaybackCalendar QToolButton {{
+    background: transparent;
+    color: {TEXT};
+    border: none;
+    margin: 4px;
+    padding: 4px 8px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+}}
+QCalendarWidget#PlaybackCalendar QToolButton:hover {{
+    background: {ACCENT_BG};
+    color: {ACCENT};
+}}
+QCalendarWidget#PlaybackCalendar QSpinBox {{
+    color: {TEXT};
+    background: {SURFACE_2};
+    border: 1px solid {BORDER_2};
+}}
+QCalendarWidget#PlaybackCalendar QAbstractItemView {{
+    background: {SURFACE};
+    selection-background-color: {ACCENT};
+    selection-color: {INK};
+    color: {TEXT};
+    gridline-color: transparent;
+}}
+QCalendarWidget#PlaybackCalendar QAbstractItemView:disabled {{
+    color: {TEXT_DIM};
+}}
+
+QCheckBox {{
+    color: {TEXT};
+    font-size: 12px;
+    spacing: 8px;
+    padding: 2px 0;
+}}
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    background: {SURFACE};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {TEXT_MUTED};
+}}
+QCheckBox::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+}}
+
+#Timeline {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+}}
+
+#TransportBar {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 2px;
+}}
 """
