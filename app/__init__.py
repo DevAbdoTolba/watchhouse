@@ -13,7 +13,11 @@ os.environ.setdefault(
     "|reorder_queue_size;0"
     "|max_delay;500000"
     "|analyzeduration;1000000"
-    "|probesize;2000000",
+    "|probesize;2000000"
+    # Socket-level timeouts so an unreachable DVR fails over instead of
+    # hanging cv2.VideoCapture() forever in the worker thread.
+    "|stimeout;5000000"
+    "|timeout;5000000",
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"

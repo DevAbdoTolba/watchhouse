@@ -160,4 +160,53 @@ QPushButton#ToolbarAction:pressed {{
     font-size: 11px;
     letter-spacing: 0.04em;
 }}
+
+QDockWidget#Console {{
+    color: {TEXT};
+}}
+QDockWidget#Console::title {{
+    background: {SURFACE_2};
+    border-top: 1px solid {BORDER};
+    padding: 0;
+    text-align: left;
+}}
+#ConsoleTitlebar {{
+    background: {SURFACE_2};
+    border-top: 1px solid {BORDER};
+}}
+#ConsoleTitle {{
+    color: {TEXT};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+}}
+#ConsoleAction {{
+    background: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT_MUTED};
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.10em;
+    padding: 2px 10px;
+    min-height: 20px;
+}}
+#ConsoleAction:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+#ConsoleBody {{
+    background: {INK};
+}}
+QPlainTextEdit#ConsoleView {{
+    background: {VIDEO_BG};
+    color: {TEXT_MUTED};
+    border: none;
+    border-top: 1px solid {BORDER};
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 11px;
+    padding: 8px 14px;
+    selection-background-color: {ACCENT};
+    selection-color: {INK};
+}}
 """

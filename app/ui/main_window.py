@@ -1,11 +1,11 @@
-"""Main window: toolbar over a 2x2 camera grid over a status bar."""
+"""Main window: toolbar over a 2x2 camera grid over a status bar, plus a
+toggleable bottom-docked admin log console."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QGuiApplication
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -19,13 +19,17 @@ from PySide6.QtWidgets import (
 from app import __version__
 from app.core.cameras import default_cameras
 from app.core.config import Settings
+from app.core.log import bus
+from app.core.probe import ProbeWorker
 from app.ui.camera_tile import CameraTile
+from app.ui.console_panel import ConsolePanel
 
 
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings) -> None:
         super().__init__()
         self._settings = settings
+        self._probe: ProbeWorker | None = None
         self.setWindowTitle("CCTV Console")
         self.setMinimumSize(880, 560)
         self._size_to_screen()
@@ -45,19 +49,22 @@ class MainWindow(QMainWindow):
         cv.addWidget(status_bar)
         self.setCentralWidget(central)
 
+        # Console dock
+        self._console = ConsolePanel(self)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._console)
+        self._console.hide()  # start closed; user toggles via button or Ctrl+L
+        self._console.visibilityChanged.connect(self._sync_console_button)
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self._toggle_console)
+
         self._refresh_clock = QTimer(self)
         self._refresh_clock.timeout.connect(self._update_status_bar)
         self._refresh_clock.start(1000)
 
+        bus.info("APP", f"CCTV Console v{__version__} starting")
+
     # Build
 
     def _size_to_screen(self) -> None:
-        """Pick a default size that fits the user's screen, then center it.
-
-        Caps at 1280x760 on big screens, shrinks to 92% of available
-        geometry on small ones (avoids the window opening half-offscreen
-        on 1366x768 laptops with DPI scaling).
-        """
         screen = QGuiApplication.primaryScreen().availableGeometry()
         w = min(1280, int(screen.width() * 0.92))
         h = min(760, int(screen.height() * 0.92))
@@ -84,6 +91,19 @@ class MainWindow(QMainWindow):
         spacer = QWidget(bar)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
+        self._probe_btn = QPushButton("TEST DVR", bar)
+        self._probe_btn.setObjectName("ToolbarAction")
+        self._probe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._probe_btn.setMinimumHeight(30)
+        self._probe_btn.clicked.connect(self._run_probe)
+
+        self._console_btn = QPushButton("CONSOLE", bar)
+        self._console_btn.setObjectName("ToolbarAction")
+        self._console_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._console_btn.setMinimumHeight(30)
+        self._console_btn.setCheckable(True)
+        self._console_btn.clicked.connect(self._toggle_console)
+
         self._reconnect_btn = QPushButton("RECONNECT ALL", bar)
         self._reconnect_btn.setObjectName("ToolbarAction")
         self._reconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -94,6 +114,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(brand)
         layout.addWidget(version)
         layout.addWidget(spacer)
+        layout.addWidget(self._probe_btn)
+        layout.addWidget(self._console_btn)
         layout.addWidget(self._reconnect_btn)
         return bar
 
@@ -145,20 +167,39 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         for tile in self._tiles:
             tile.start()
+        # Kick off DVR probe shortly after the window has painted, so the
+        # log entries appear in the console if the user opens it.
+        QTimer.singleShot(400, self._run_probe)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._refresh_clock.stop()
         for tile in self._tiles:
             tile.shutdown(wait_ms=2000)
+        if self._probe is not None and self._probe.isRunning():
+            self._probe.wait(2000)
         super().closeEvent(event)
 
     # Actions
 
     def _reconnect_all(self) -> None:
+        bus.info("APP", "user requested RECONNECT ALL")
         for tile in self._tiles:
             tile.shutdown(wait_ms=500)
         for tile in self._tiles:
             tile.start()
+
+    def _toggle_console(self) -> None:
+        self._console.setVisible(not self._console.isVisible())
+
+    def _sync_console_button(self, visible: bool) -> None:
+        self._console_btn.setChecked(visible)
+
+    def _run_probe(self) -> None:
+        if self._probe is not None and self._probe.isRunning():
+            bus.info("PROBE", "probe already running; ignoring re-trigger")
+            return
+        self._probe = ProbeWorker(self._settings, parent=self)
+        self._probe.start()
 
     def _update_status_bar(self) -> None:
         from datetime import datetime

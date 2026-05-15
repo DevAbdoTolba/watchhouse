@@ -167,7 +167,11 @@ class CameraTile(QFrame):
         outer.addWidget(self._video, 1)
 
         # Worker
-        self._worker = StreamWorker(camera.url(self._current, settings), parent=self)
+        self._worker = StreamWorker(
+            camera.url(self._current, settings),
+            label=f"CAM{camera.index}",
+            parent=self,
+        )
         self._worker.frame_ready.connect(self._video.set_frame)
         self._worker.status_changed.connect(self._on_status)
 
