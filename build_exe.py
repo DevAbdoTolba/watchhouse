@@ -1,10 +1,10 @@
-"""Build CCTV-Console.exe via PyInstaller (one-file, windowed).
+"""Build Watchhouse.exe via PyInstaller (one-file, windowed).
 
 Run from inside the project venv:
     pip install -e .[build]
     python build_exe.py
 
-Output: dist/CCTV-Console.exe
+Output: dist/Watchhouse.exe
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def main() -> int:
 
     args = [
         str(ENTRY),
-        "--name=CCTV-Console",
+        "--name=Watchhouse",
         "--onefile",
         "--windowed",
         "--noconfirm",
@@ -72,13 +72,13 @@ def main() -> int:
 
     PyInstaller.__main__.run(args)
 
-    out = ROOT / "dist" / "CCTV-Console.exe"
+    out = ROOT / "dist" / "Watchhouse.exe"
     if out.exists():
         size_mb = out.stat().st_size / (1024 * 1024)
         print()
         print(f"Built {out}  ({size_mb:.1f} MB)")
         return 0
-    print("Build failed: dist\\CCTV-Console.exe not produced", file=sys.stderr)
+    print("Build failed: dist\\Watchhouse.exe not produced", file=sys.stderr)
     return 1
 
 

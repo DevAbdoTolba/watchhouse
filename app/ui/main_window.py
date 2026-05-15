@@ -33,7 +33,7 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._probe: ProbeWorker | None = None
         self._discovery: DiscoveryWorker | None = None
-        self.setWindowTitle("CCTV Console")
+        self.setWindowTitle("Watchhouse")
         self.setMinimumSize(880, 560)
         self._size_to_screen()
 
@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
         self._refresh_clock.timeout.connect(self._update_status_bar)
         self._refresh_clock.start(1000)
 
-        bus.info("APP", f"CCTV Console v{__version__} starting")
+        bus.info("APP", f"Watchhouse v{__version__} starting")
 
     # Build
 
@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 0, 16, 0)
         layout.setSpacing(14)
 
-        brand = QLabel("CCTV CONSOLE", bar)
+        brand = QLabel("WATCHHOUSE", bar)
         brand.setObjectName("Brand")
 
         version = QLabel(f"v{__version__}", bar)

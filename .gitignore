@@ -5,6 +5,10 @@
 # Local app state (cached DVR addresses, etc.)
 .cctv-known-dvrs.json
 
+# Archived previous experiment (kept on disk for our reference only,
+# never published to the public repo).
+.old/
+
 # Python
 __pycache__/
 *.py[cod]

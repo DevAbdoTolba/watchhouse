@@ -1,7 +1,7 @@
 [project]
-name = "home-cameras-console"
+name = "watchhouse"
 version = "0.1.5"
-description = "Local CCTV console for a 4-camera BitVision/Cantonk DVR over RTSP. Windows-native, single executable."
+description = "Watchhouse - a local AI surveillance platform for legacy DVRs. Live 4-camera view with auto-discovery; AI event detection (people, faces, plates, zones, loitering) on the roadmap. Windows-native, single executable."
 requires-python = ">=3.11,<3.13"
 authors = [{ name = "Abdo Tolba" }]
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 build = ["pyinstaller==6.11.1"]
 
 [project.scripts]
-cctv-console = "app.main:main"
+watchhouse = "app.main:main"
 
 [build-system]
 requires = ["hatchling"]

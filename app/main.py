@@ -17,8 +17,8 @@ def main() -> int:
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
     app = QApplication(sys.argv)
-    app.setApplicationName("CCTV Console")
-    app.setOrganizationName("HomeCameras")
+    app.setApplicationName("Watchhouse")
+    app.setOrganizationName("Watchhouse")
     app.setStyle("Fusion")
 
     palette = QPalette()
