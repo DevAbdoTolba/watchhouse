@@ -56,6 +56,9 @@ def main() -> int:
         "--collect-binaries=cv2",
         "--collect-data=cv2",
         f"--paths={ROOT}",
+        # numpy.random.bit_generator imports `secrets` from a Cython module,
+        # which PyInstaller's static analysis cannot see.
+        "--hidden-import=secrets",
         "--exclude-module=tkinter",
         "--exclude-module=unittest",
         "--exclude-module=pydoc",
