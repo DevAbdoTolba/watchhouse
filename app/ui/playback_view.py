@@ -25,6 +25,7 @@ from app.core.config import Settings
 from app.core.playback_player import PlaybackPlayer
 from app.ui import theme
 from app.ui.camera_tile import VideoPanel
+from app.ui.icon_button import IconButton
 from app.ui.timeline_widget import TimelineWidget
 
 
@@ -228,35 +229,31 @@ class PlaybackView(QWidget):
         h.setContentsMargins(14, 0, 14, 0)
         h.setSpacing(10)
 
-        self._jump_back_btn = QPushButton("<< 30s", bar)
-        self._jump_back_btn.setObjectName("ToolbarAction")
-        self._jump_back_btn.setMinimumHeight(28)
+        self._jump_back_btn = IconButton(IconButton.KIND_SKIP_BACK, "30s", bar)
+        self._jump_back_btn.setToolTip("Jump back 30 seconds")
         self._jump_back_btn.clicked.connect(lambda: self._jump_relative(-30))
 
-        self._play_btn = QPushButton("PLAY", bar)
-        self._play_btn.setObjectName("ToolbarAction")
-        self._play_btn.setMinimumHeight(28)
-        self._play_btn.setMinimumWidth(96)
+        self._play_btn = IconButton(IconButton.KIND_PLAY, "", bar)
+        self._play_btn.setFixedSize(46, 32)
+        self._play_btn.setToolTip("Play / Pause")
         self._play_btn.clicked.connect(self._toggle_play)
 
-        self._jump_fwd_btn = QPushButton("30s >>", bar)
-        self._jump_fwd_btn.setObjectName("ToolbarAction")
-        self._jump_fwd_btn.setMinimumHeight(28)
+        self._jump_fwd_btn = IconButton(IconButton.KIND_SKIP_FWD, "30s", bar)
+        self._jump_fwd_btn.setToolTip("Jump forward 30 seconds")
         self._jump_fwd_btn.clicked.connect(lambda: self._jump_relative(30))
 
         h.addWidget(self._jump_back_btn)
         h.addWidget(self._play_btn)
         h.addWidget(self._jump_fwd_btn)
 
-        h.addSpacing(20)
+        h.addSpacing(16)
 
         self._speed_buttons: dict[float, QPushButton] = {}
         for s in (0.5, 1.0, 2.0, 4.0):
             b = QPushButton(f"{s:g}x", bar)
-            b.setObjectName("ToolbarAction")
+            b.setObjectName("SpeedButton")
             b.setCheckable(True)
-            b.setMinimumHeight(28)
-            b.setMinimumWidth(48)
+            b.setFixedSize(36, 24)
             b.setChecked(s == 1.0)
             b.clicked.connect(lambda _checked, sp=s: self._set_speed(sp))
             self._speed_buttons[s] = b
@@ -353,7 +350,7 @@ class PlaybackView(QWidget):
 
     def _toggle_play(self) -> None:
         self._is_playing = not self._is_playing
-        self._play_btn.setText("PAUSE" if self._is_playing else "PLAY")
+        self._play_btn.set_kind(IconButton.KIND_PAUSE if self._is_playing else IconButton.KIND_PLAY)
         for tile in self._tiles:
             if tile._camera.index in self._selected_cams:
                 if self._is_playing:

@@ -29,6 +29,7 @@ from app.core.recorder import RecorderSupervisor
 from app.ui.camera_tile import CameraTile
 from app.ui.console_panel import ConsolePanel
 from app.ui.playback_view import PlaybackView
+from app.ui.wipe_dialog import WipeDialog
 
 
 class MainWindow(QMainWindow):
@@ -149,6 +150,13 @@ class MainWindow(QMainWindow):
         self._console_btn.setCheckable(True)
         self._console_btn.clicked.connect(self._toggle_console)
 
+        self._wipe_btn = QPushButton("WIPE", bar)
+        self._wipe_btn.setObjectName("DangerAction")
+        self._wipe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._wipe_btn.setMinimumHeight(30)
+        self._wipe_btn.setToolTip("Delete recordings, caches, and other data (PIN-gated)")
+        self._wipe_btn.clicked.connect(self._open_wipe_dialog)
+
         self._reconnect_btn = QPushButton("RECONNECT ALL", bar)
         self._reconnect_btn.setObjectName("ToolbarAction")
         self._reconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -166,8 +174,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._discover_btn)
         layout.addWidget(self._pbprobe_btn)
         layout.addWidget(self._console_btn)
+        layout.addWidget(self._wipe_btn)
         layout.addWidget(self._reconnect_btn)
         return bar
+
+    def _open_wipe_dialog(self) -> None:
+        dlg = WipeDialog(self._settings, expected_pin="123", parent=self)
+        dlg.exec()
 
     def _set_mode(self, mode: str) -> None:
         if mode == "live":

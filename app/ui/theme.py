@@ -303,6 +303,102 @@ QCheckBox::indicator:checked {{
     border: 1px solid {BORDER};
 }}
 
+QPushButton#IconButton {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 2px;
+}}
+QPushButton#IconButton:hover {{
+    background: {ACCENT_BG};
+    border-color: {ACCENT};
+}}
+
+QPushButton#SpeedButton {{
+    background: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT_MUTED};
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    padding: 0;
+}}
+QPushButton#SpeedButton:hover {{
+    border-color: {TEXT_MUTED};
+    color: {TEXT};
+}}
+QPushButton#SpeedButton:checked {{
+    background: {ACCENT_BG};
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+
+QPushButton#DangerAction {{
+    background-color: transparent;
+    border: 1px solid {ERROR};
+    border-radius: 2px;
+    color: {ERROR};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.10em;
+    padding: 0 14px;
+}}
+QPushButton#DangerAction:hover {{
+    background-color: {ERROR};
+    color: {INK};
+}}
+
+QDialog#WipeDialog {{
+    background: {INK};
+}}
+#DialogTitle {{
+    color: {TEXT};
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+}}
+#DialogSubtitle {{
+    color: {TEXT_MUTED};
+    font-size: 12px;
+}}
+#DialogSeparator {{
+    background: {BORDER};
+    border: none;
+}}
+#WipeRowSummary {{
+    color: {TEXT_MUTED};
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 11px;
+}}
+#WipeRowSub {{
+    color: {TEXT_DIM};
+    font-size: 10px;
+    padding-left: 22px;
+    padding-bottom: 4px;
+}}
+#DialogFieldLabel {{
+    color: {TEXT_MUTED};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.10em;
+}}
+#DialogError {{
+    color: {ERROR};
+    font-size: 11px;
+}}
+QLineEdit {{
+    background: {SURFACE};
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT};
+    padding: 4px 8px;
+    selection-background-color: {ACCENT};
+    selection-color: {INK};
+}}
+QLineEdit:focus {{
+    border-color: {ACCENT};
+}}
+
 #TransportBar {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};
