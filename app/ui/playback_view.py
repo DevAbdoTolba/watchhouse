@@ -28,7 +28,7 @@ from app.ui import theme
 from app.ui.camera_tile import VideoPanel
 from app.ui.icon_button import IconButton
 from app.ui.import_clip_dialog import ImportClipDialog
-from app.ui.timeline_widget import TimelineWidget
+from app.ui.timeline_drawer import TimelineDrawer
 
 
 class PlaybackTile(QFrame):
@@ -128,6 +128,7 @@ class PlaybackView(QWidget):
         self._cursor: datetime = datetime.combine(self._selected_day, _time(0, 0))
         self._is_playing = False
         self._speed = 1.0
+        self._step_seconds = 5
 
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -146,7 +147,7 @@ class PlaybackView(QWidget):
         grid_wrap, self._tiles = self._build_grid()
         right.addWidget(grid_wrap, 1)
 
-        self._timeline = TimelineWidget([c.index for c in cameras], parent=self)
+        self._timeline = TimelineDrawer([c.index for c in cameras], parent=self)
         self._timeline.seek_requested.connect(self._on_timeline_seek)
         right.addWidget(self._timeline)
 
@@ -267,18 +268,18 @@ class PlaybackView(QWidget):
         h.setContentsMargins(14, 0, 14, 0)
         h.setSpacing(10)
 
-        self._jump_back_btn = IconButton(IconButton.KIND_SKIP_BACK, "30s", bar)
-        self._jump_back_btn.setToolTip("Jump back 30 seconds")
-        self._jump_back_btn.clicked.connect(lambda: self._jump_relative(-30))
+        self._jump_back_btn = IconButton(IconButton.KIND_SKIP_BACK, "", bar)
+        self._jump_back_btn.setToolTip("Step back (uses the active step size)")
+        self._jump_back_btn.clicked.connect(lambda: self._jump_relative(-self._step_seconds))
 
         self._play_btn = IconButton(IconButton.KIND_PLAY, "", bar)
         self._play_btn.setFixedSize(46, 32)
         self._play_btn.setToolTip("Play / Pause")
         self._play_btn.clicked.connect(self._toggle_play)
 
-        self._jump_fwd_btn = IconButton(IconButton.KIND_SKIP_FWD, "30s", bar)
-        self._jump_fwd_btn.setToolTip("Jump forward 30 seconds")
-        self._jump_fwd_btn.clicked.connect(lambda: self._jump_relative(30))
+        self._jump_fwd_btn = IconButton(IconButton.KIND_SKIP_FWD, "", bar)
+        self._jump_fwd_btn.setToolTip("Step forward (uses the active step size)")
+        self._jump_fwd_btn.clicked.connect(lambda: self._jump_relative(self._step_seconds))
 
         h.addWidget(self._jump_back_btn)
         h.addWidget(self._play_btn)
@@ -286,6 +287,25 @@ class PlaybackView(QWidget):
 
         h.addSpacing(16)
 
+        step_label = QLabel("STEP", bar)
+        step_label.setObjectName("DialogFieldLabel")
+        h.addWidget(step_label)
+        self._step_buttons: dict[int, QPushButton] = {}
+        for sec, lbl in ((1, "1s"), (5, "5s"), (15, "15s"), (60, "1m")):
+            b = QPushButton(lbl, bar)
+            b.setObjectName("SpeedButton")
+            b.setCheckable(True)
+            b.setFixedSize(36, 24)
+            b.setChecked(sec == self._step_seconds)
+            b.clicked.connect(lambda _checked, s=sec: self._set_step(s))
+            self._step_buttons[sec] = b
+            h.addWidget(b)
+
+        h.addSpacing(16)
+
+        speed_label = QLabel("SPEED", bar)
+        speed_label.setObjectName("DialogFieldLabel")
+        h.addWidget(speed_label)
         self._speed_buttons: dict[float, QPushButton] = {}
         for s in (0.5, 1.0, 2.0, 4.0):
             b = QPushButton(f"{s:g}x", bar)
@@ -406,6 +426,11 @@ class PlaybackView(QWidget):
             btn.setChecked(sp == s)
         for tile in self._tiles:
             tile.set_speed(s)
+
+    def _set_step(self, seconds: int) -> None:
+        self._step_seconds = seconds
+        for sec, btn in self._step_buttons.items():
+            btn.setChecked(sec == seconds)
 
     def _advance_cursor(self) -> None:
         if not self._is_playing:
