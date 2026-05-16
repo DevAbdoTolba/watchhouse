@@ -404,4 +404,98 @@ QLineEdit:focus {{
     border: 1px solid {BORDER};
     border-radius: 2px;
 }}
+
+QPushButton#PrimaryAction {{
+    background-color: {ACCENT_BG};
+    border: 1px solid {ACCENT};
+    border-radius: 2px;
+    color: {ACCENT};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    padding: 0 14px;
+}}
+QPushButton#PrimaryAction:hover {{
+    background-color: {ACCENT};
+    color: {INK};
+}}
+QPushButton#PrimaryAction:disabled {{
+    background-color: transparent;
+    border-color: {BORDER_2};
+    color: {TEXT_DIM};
+}}
+
+QPushButton#SidebarAction {{
+    background-color: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT_MUTED};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    padding: 6px 0;
+}}
+QPushButton#SidebarAction:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+
+QComboBox, QDateEdit, QTimeEdit {{
+    background: {SURFACE};
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT};
+    padding: 4px 10px;
+    selection-background-color: {ACCENT};
+    selection-color: {INK};
+}}
+QComboBox:focus, QDateEdit:focus, QTimeEdit:focus {{
+    border-color: {ACCENT};
+}}
+QComboBox::drop-down, QDateEdit::drop-down, QTimeEdit::drop-down {{
+    width: 20px;
+    border-left: 1px solid {BORDER_2};
+    background: {SURFACE_2};
+}}
+QComboBox QAbstractItemView {{
+    background: {SURFACE};
+    color: {TEXT};
+    border: 1px solid {BORDER_2};
+    selection-background-color: {ACCENT_BG};
+    selection-color: {ACCENT};
+    outline: none;
+}}
+QDateEdit QAbstractItemView, QTimeEdit QAbstractItemView {{
+    background: {SURFACE};
+    color: {TEXT};
+    border: 1px solid {BORDER_2};
+    selection-background-color: {ACCENT};
+    selection-color: {INK};
+}}
+QCalendarWidget QWidget {{
+    background: {SURFACE};
+    color: {TEXT};
+}}
+QCalendarWidget QToolButton {{
+    background: transparent;
+    color: {TEXT};
+    border: none;
+    margin: 4px;
+    padding: 4px 8px;
+    font-weight: 600;
+}}
+QCalendarWidget QToolButton:hover {{
+    background: {ACCENT_BG};
+    color: {ACCENT};
+}}
+QCalendarWidget QAbstractItemView {{
+    background: {SURFACE};
+    selection-background-color: {ACCENT};
+    selection-color: {INK};
+    color: {TEXT};
+    outline: none;
+}}
+QCalendarWidget QAbstractItemView:disabled {{
+    color: {TEXT_DIM};
+}}
 """

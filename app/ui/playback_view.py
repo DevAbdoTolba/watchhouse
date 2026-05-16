@@ -22,10 +22,12 @@ from PySide6.QtWidgets import (
 from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
 from app.core.config import Settings
+from app.core.log import bus
 from app.core.playback_player import PlaybackPlayer
 from app.ui import theme
 from app.ui.camera_tile import VideoPanel
 from app.ui.icon_button import IconButton
+from app.ui.import_clip_dialog import ImportClipDialog
 from app.ui.timeline_widget import TimelineWidget
 
 
@@ -199,8 +201,44 @@ class PlaybackView(QWidget):
             self._cam_checkboxes[cam.index] = cb
             v.addWidget(cb)
 
+        v.addSpacing(8)
+
+        title3 = QLabel("LIBRARY", side)
+        title3.setObjectName("SidebarHeading")
+        v.addWidget(title3)
+
+        self._import_btn = QPushButton("IMPORT CLIP", side)
+        self._import_btn.setObjectName("SidebarAction")
+        self._import_btn.setToolTip(
+            "Add a manually-exported DVR video to the playback library"
+        )
+        self._import_btn.clicked.connect(self._on_import_clip)
+        v.addWidget(self._import_btn)
+
         v.addStretch(1)
         return side
+
+    @Slot()
+    def _on_import_clip(self) -> None:
+        dlg = ImportClipDialog(
+            cameras=self._cameras,
+            imported_dir=self._settings.recording_dir / "imported",
+            parent=self,
+        )
+        if dlg.exec() != ImportClipDialog.DialogCode.Accepted:
+            return
+        if dlg.result_path is None or dlg.result_when is None:
+            return
+        bus.info("PLAYBACK", f"library refresh after import of {dlg.result_path.name}")
+        self.refresh_library()
+        # Jump to the day + a couple seconds past the start so the player
+        # has frames to draw.
+        when = dlg.result_when
+        self._selected_day = when.date()
+        self._calendar.setSelectedDate(QDate(when.year, when.month, when.day))
+        self._timeline.set_day(self._selected_day)
+        self._cursor = when + timedelta(seconds=2)
+        self._load_all_at_cursor()
 
     def _build_grid(self) -> tuple[QWidget, list[PlaybackTile]]:
         wrap = QWidget(self)
