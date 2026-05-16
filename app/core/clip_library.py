@@ -16,10 +16,24 @@ Two sources are merged into one library:
 from __future__ import annotations
 
 import re
+import time as _time_mod
 from dataclasses import dataclass
 from datetime import date as _date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
+
+
+# A file whose mtime is within this many seconds is treated as "still
+# being written" by ffmpeg's segment muxer and is excluded from the
+# playback library. The MP4 moov atom is only written on segment close,
+# so attempting to open such a file with cv2.VideoCapture fails.
+IN_PROGRESS_GRACE_SECONDS = 90
+
+
+def _is_in_progress(mtime: float, now: float | None = None) -> bool:
+    if now is None:
+        now = _time_mod.time()
+    return (now - mtime) < IN_PROGRESS_GRACE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -168,6 +182,8 @@ def scan(recording_dir: Path) -> dict[int, list[Clip]]:
             try:
                 stat = mp4.stat()
             except OSError:
+                continue
+            if _is_in_progress(stat.st_mtime):
                 continue
             clips.append(
                 Clip(
