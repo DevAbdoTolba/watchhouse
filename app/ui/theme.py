@@ -149,6 +149,25 @@ QPushButton#ToolbarAction:pressed {{
     color: {ACCENT};
 }}
 
+#TileReload {{
+    background: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT_MUTED};
+    font-size: 14px;
+    font-weight: 600;
+    padding: 0;
+}}
+#TileReload:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+#TileReload:pressed {{
+    background: {ACCENT_BG};
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+
 #StatusBar {{
     background: {SURFACE_2};
     border-top: 1px solid {BORDER};

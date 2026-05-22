@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from app.core.cameras import Camera
 from app.core.config import Settings
+from app.core.log import bus
 from app.core.stream import StreamWorker
 from app.ui import theme
 
@@ -146,6 +147,13 @@ class CameraTile(QFrame):
         spacer = QWidget(header)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
+        self._reload = QPushButton("↻", header)  # ↻ clockwise open circle arrow
+        self._reload.setObjectName("TileReload")
+        self._reload.setFixedSize(24, 22)
+        self._reload.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reload.setToolTip("Reconnect this camera only")
+        self._reload.clicked.connect(self._on_reload)
+
         self._toggle = QPushButton(self._current.upper(), header)
         self._toggle.setObjectName("StreamToggle")
         self._toggle.setCheckable(True)
@@ -158,6 +166,7 @@ class CameraTile(QFrame):
         hl.addWidget(name)
         hl.addWidget(location)
         hl.addWidget(spacer)
+        hl.addWidget(self._reload)
         hl.addWidget(self._toggle)
 
         # Video
@@ -223,6 +232,12 @@ class CameraTile(QFrame):
             self._build_worker()
 
     # Internal
+
+    @Slot()
+    def _on_reload(self) -> None:
+        bus.info(f"CAM{self._camera.index}", "user requested reconnect (this camera)")
+        self._video.set_message("Reconnecting")
+        self.reconnect()
 
     @Slot(bool)
     def _on_toggle(self, checked: bool) -> None:
