@@ -11,7 +11,10 @@ clock via `-strftime 1`, producing a flat-per-camera layout:
     ...
 
 A separate retention pruner walks the tree on a 5-minute timer and
-deletes files older than `recording_retention_days`.
+deletes files older than `recording_retention_minutes`. Default is a
+90-minute sliding window so the on-disk footprint stays small; the
+v0.4+ AI analyzer is what extracts the keeper clips before segments
+age out of the window.
 
 If ffmpeg dies (network drop, decoder error), the worker waits with
 exponential backoff and respawns.
@@ -250,10 +253,18 @@ class RecorderSupervisor(QObject):
         base = self._settings.recording_dir
         if not base.is_dir():
             return
-        cutoff = time.time() - (self._settings.recording_retention_days * 86400)
+        cutoff = time.time() - (self._settings.recording_retention_minutes * 60)
         pruned = 0
         freed_bytes = 0
+        # Never prune anything in the imported/ subtree - those are user
+        # curated clips, not part of the rolling capture buffer.
+        imported_root = (base / "imported").resolve()
         for f in base.rglob("*.mp4"):
+            try:
+                if imported_root in f.resolve().parents:
+                    continue
+            except OSError:
+                continue
             try:
                 stat = f.stat()
             except OSError:
@@ -269,7 +280,8 @@ class RecorderSupervisor(QObject):
             bus.info(
                 "REC",
                 f"retention: pruned {pruned} segment(s) older than "
-                f"{self._settings.recording_retention_days}d, freed {freed_bytes / 1024 / 1024:.1f} MB",
+                f"{self._settings.recording_retention_minutes}min, "
+                f"freed {freed_bytes / 1024 / 1024:.1f} MB",
             )
 
     def _refresh_stats(self) -> None:

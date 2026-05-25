@@ -69,8 +69,8 @@ class Settings:
     recording_enabled: bool
     recording_dir: Path
     recording_stream: str          # "sub" | "main"
-    recording_segment_minutes: int  # default 30
-    recording_retention_days: int   # default 7
+    recording_segment_minutes: int    # default 15
+    recording_retention_minutes: int  # default 90 (1.5h sliding window)
 
     @classmethod
     def load(cls) -> "Settings":
@@ -102,8 +102,8 @@ class Settings:
             recording_enabled=_truthy(os.environ.get("RECORDING_ENABLED", "1")),
             recording_dir=rec_dir,
             recording_stream=_norm(os.environ.get("RECORDING_STREAM", "sub")),
-            recording_segment_minutes=int(os.environ.get("RECORDING_SEGMENT_MINUTES", "30")),
-            recording_retention_days=int(os.environ.get("RECORDING_RETENTION_DAYS", "7")),
+            recording_segment_minutes=int(os.environ.get("RECORDING_SEGMENT_MINUTES", "15")),
+            recording_retention_minutes=_retention_minutes(),
         )
         bus.info(
             "CFG",
@@ -113,10 +113,30 @@ class Settings:
         bus.info(
             "CFG",
             f"recording: enabled={s.recording_enabled} stream={s.recording_stream} "
-            f"segment={s.recording_segment_minutes}min retention={s.recording_retention_days}d "
+            f"segment={s.recording_segment_minutes}min "
+            f"retention={_fmt_minutes(s.recording_retention_minutes)} "
             f"dir={s.recording_dir}",
         )
         return s
+
+
+def _retention_minutes() -> int:
+    """Read retention from env. MINUTES takes precedence; DAYS is the legacy
+    fallback for users who still have `RECORDING_RETENTION_DAYS=` in `.env`."""
+    if (mins := os.environ.get("RECORDING_RETENTION_MINUTES")) is not None:
+        return max(1, int(mins))
+    if (days := os.environ.get("RECORDING_RETENTION_DAYS")) is not None:
+        return max(1, int(days)) * 1440
+    return 90  # default: 90-minute sliding window
+
+
+def _fmt_minutes(m: int) -> str:
+    if m >= 1440 and m % 1440 == 0:
+        return f"{m // 1440}d"
+    if m >= 60:
+        h = m / 60.0
+        return f"{h:g}h"
+    return f"{m}min"
 
 
 def _norm(value: str) -> str:
