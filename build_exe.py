@@ -21,7 +21,41 @@ ICON = ROOT / "app" / "resources" / "icon.ico"
 ENTRY = ROOT / "app" / "__main__.py"
 
 
+def _preflight() -> None:
+    """Fail fast on a polluted build env. Exporting the YOLO model pulls in
+    ultralytics, which drags numpy 2.x and the GUI `opencv-python` into the
+    venv - both break the frozen build (numpy C-extension import error /
+    conflicting cv2). The model is already committed, so the export deps are
+    not needed to build; this guard catches the pollution before a bad exe
+    ships."""
+    import numpy
+
+    if not numpy.__version__.startswith("1."):
+        sys.exit(
+            f"Build aborted: numpy {numpy.__version__} is installed but the "
+            "frozen build pins numpy 1.x.\n  Fix: pip install 'numpy==1.26.4'"
+        )
+    try:
+        from importlib.metadata import distributions
+
+        names = {(d.metadata["Name"] or "").lower() for d in distributions()}
+        if "opencv-python" in names:
+            sys.exit(
+                "Build aborted: GUI 'opencv-python' is installed alongside "
+                "opencv-python-headless (conflicting cv2).\n"
+                "  Fix: pip uninstall -y opencv-python && "
+                "pip install --force-reinstall --no-deps "
+                "'opencv-python-headless==4.10.0.84'"
+            )
+    except Exception:
+        pass
+    model = ROOT / "app" / "resources" / "models" / "yolov8n.onnx"
+    if not model.is_file():
+        print(f"WARNING: detection model missing at {model}; exe will run without AI.")
+
+
 def main() -> int:
+    _preflight()
     if (ROOT / "build").exists():
         shutil.rmtree(ROOT / "build")
     if (ROOT / "dist").exists():
