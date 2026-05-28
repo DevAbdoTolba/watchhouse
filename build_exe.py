@@ -9,6 +9,7 @@ Output: dist/Watchhouse.exe
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -58,6 +59,10 @@ def main() -> int:
         # Recorder needs the bundled ffmpeg executable from imageio-ffmpeg.
         "--collect-binaries=imageio_ffmpeg",
         "--collect-data=imageio_ffmpeg",
+        # AI detection: onnxruntime native libs + the bundled yolov8n model.
+        "--collect-binaries=onnxruntime",
+        "--collect-data=onnxruntime",
+        f"--add-data={ROOT / 'app' / 'resources'}{os.pathsep}app/resources",
         f"--paths={ROOT}",
         # numpy.random.bit_generator imports `secrets` from a Cython module,
         # which PyInstaller's static analysis cannot see.
@@ -67,6 +72,13 @@ def main() -> int:
         "--exclude-module=pydoc",
         "--exclude-module=test",
         "--exclude-module=xmlrpc",
+        # torch/ultralytics are build-time only (used once to export the ONNX
+        # model). The shipped app uses onnxruntime; keep the heavy stack out.
+        "--exclude-module=torch",
+        "--exclude-module=torchvision",
+        "--exclude-module=ultralytics",
+        "--exclude-module=matplotlib",
+        "--exclude-module=pandas",
     ]
     for mod in pyside_excludes:
         args.append(f"--exclude-module={mod}")

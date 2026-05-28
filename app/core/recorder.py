@@ -197,6 +197,7 @@ class RecorderSupervisor(QObject):
     """
 
     stats_changed = Signal(int, int, int)  # segments_count, bytes_total, active_workers
+    segment_closed = Signal(str)           # absolute path to a just-finalized segment
 
     PRUNE_INTERVAL_MS = 5 * 60 * 1000   # every 5 minutes
     STATS_INTERVAL_MS = 10 * 1000       # every 10 seconds
@@ -207,6 +208,9 @@ class RecorderSupervisor(QObject):
         self._cameras = cameras
         self._workers: list[RecorderWorker] = []
         self._active = 0
+        # Per-camera last segment path. When a worker opens a new segment the
+        # previously-seen one for that camera is finalized -> emit it.
+        self._last_segment: dict[int, str] = {}
         self._prune_timer = QTimer(self)
         self._prune_timer.timeout.connect(self._prune_old_segments)
         self._stats_timer = QTimer(self)
@@ -225,6 +229,7 @@ class RecorderSupervisor(QObject):
         for cam in self._cameras:
             w = RecorderWorker(cam, self._settings, parent=self)
             w.status_changed.connect(lambda st, c=cam.index: self._on_worker_status(c, st))
+            w.segment_opened.connect(lambda p, c=cam.index: self._on_segment_opened(c, p))
             self._workers.append(w)
             w.start()
 
@@ -242,6 +247,12 @@ class RecorderSupervisor(QObject):
         for w in self._workers:
             w.wait(wait_ms)
         self._workers.clear()
+
+    def _on_segment_opened(self, cam_index: int, new_path: str) -> None:
+        prev = self._last_segment.get(cam_index)
+        self._last_segment[cam_index] = new_path
+        if prev and prev != new_path:
+            self.segment_closed.emit(prev)
 
     def _on_worker_status(self, cam_index: int, status: str) -> None:
         if status == "recording":

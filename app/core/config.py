@@ -71,6 +71,11 @@ class Settings:
     recording_stream: str          # "sub" | "main"
     recording_segment_minutes: int    # default 15
     recording_retention_minutes: int  # default 90 (1.5h sliding window)
+    # Detection (v0.4+)
+    detection_enabled: bool
+    detection_conf: float
+    detection_sample_seconds: float
+    detection_model: Path
 
     @classmethod
     def load(cls) -> "Settings":
@@ -104,6 +109,10 @@ class Settings:
             recording_stream=_norm(os.environ.get("RECORDING_STREAM", "sub")),
             recording_segment_minutes=int(os.environ.get("RECORDING_SEGMENT_MINUTES", "15")),
             recording_retention_minutes=_retention_minutes(),
+            detection_enabled=_truthy(os.environ.get("DETECTION_ENABLED", "1")),
+            detection_conf=float(os.environ.get("DETECTION_CONF", "0.35")),
+            detection_sample_seconds=float(os.environ.get("DETECTION_SAMPLE_SECONDS", "1.0")),
+            detection_model=_resolve_model_path(os.environ.get("DETECTION_MODEL")),
         )
         bus.info(
             "CFG",
@@ -117,7 +126,33 @@ class Settings:
             f"retention={_fmt_minutes(s.recording_retention_minutes)} "
             f"dir={s.recording_dir}",
         )
+        bus.info(
+            "CFG",
+            f"detection: enabled={s.detection_enabled} conf={s.detection_conf:g} "
+            f"sample={s.detection_sample_seconds:g}s "
+            f"model={'found' if s.detection_model.is_file() else 'MISSING'} "
+            f"({s.detection_model.name})",
+        )
         return s
+
+
+def _resolve_model_path(override: str | None) -> Path:
+    """Locate yolov8n.onnx. Order: explicit override, a models/ folder next
+    to the exe (user-droppable), the PyInstaller bundle, then the dev tree."""
+    if override:
+        return Path(override)
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "models" / "yolov8n.onnx")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "app" / "resources" / "models" / "yolov8n.onnx")
+    candidates.append(Path(__file__).resolve().parents[1] / "resources" / "models" / "yolov8n.onnx")
+    for c in candidates:
+        if c.is_file():
+            return c
+    return candidates[0]  # report the most likely intended location even if missing
 
 
 def _retention_minutes() -> int:

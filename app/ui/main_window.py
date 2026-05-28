@@ -25,6 +25,7 @@ from app.core.ip_cache import load as load_ip_cache, record_hit as record_ip_hit
 from app.core.log import bus
 from app.core.playback_probe import PlaybackProbeWorker
 from app.core.probe import ProbeWorker
+from app.core.analyzer import SegmentAnalyzer
 from app.core.recorder import RecorderSupervisor
 from app.ui.camera_tile import CameraTile
 from app.ui.console_panel import ConsolePanel
@@ -40,6 +41,7 @@ class MainWindow(QMainWindow):
         self._discovery: DiscoveryWorker | None = None
         self._pbprobe: PlaybackProbeWorker | None = None
         self._recorder: RecorderSupervisor | None = None
+        self._analyzer: SegmentAnalyzer | None = None
         self.setWindowTitle("Watchhouse")
         self.setMinimumSize(880, 560)
         self._size_to_screen()
@@ -241,12 +243,16 @@ class MainWindow(QMainWindow):
         self._status_recorder = QLabel("REC: off", bar)
         self._status_recorder.setObjectName("StatusBarText")
 
+        self._status_ai = QLabel("AI: off", bar)
+        self._status_ai.setObjectName("StatusBarText")
+
         self._status_clock = QLabel("", bar)
         self._status_clock.setObjectName("StatusBarText")
 
         layout.addWidget(self._status_dvr)
         layout.addWidget(spacer)
         layout.addWidget(self._status_recorder)
+        layout.addWidget(self._status_ai)
         layout.addWidget(self._status_clock)
         return bar
 
@@ -270,6 +276,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._refresh_clock.stop()
+        if self._analyzer is not None:
+            self._analyzer.request_stop()
+            self._analyzer.wait(3000)
         if self._recorder is not None:
             self._recorder.stop(wait_ms=5000)
         for tile in self._tiles:
@@ -359,7 +368,32 @@ class MainWindow(QMainWindow):
             return
         self._recorder = RecorderSupervisor(self._settings, self._cameras, parent=self)
         self._recorder.stats_changed.connect(self._on_recorder_stats)
+        if self._settings.detection_enabled:
+            self._start_analyzer()
+            if self._analyzer is not None:
+                self._recorder.segment_closed.connect(self._analyzer.enqueue)
         self._recorder.start()
+
+    def _start_analyzer(self) -> None:
+        if self._analyzer is not None:
+            return
+        model = self._settings.detection_model
+        if not model.is_file():
+            bus.warn("AI", f"model missing ({model}); detection disabled this session")
+            self._status_ai.setText("AI: no model")
+            return
+        self._analyzer = SegmentAnalyzer(
+            model_path=model,
+            conf=self._settings.detection_conf,
+            sample_seconds=self._settings.detection_sample_seconds,
+            parent=self,
+        )
+        self._analyzer.totals_changed.connect(self._on_ai_totals)
+        self._analyzer.start()
+        self._status_ai.setText("AI: 0P / 0V")
+
+    def _on_ai_totals(self, person_segments: int, vehicle_segments: int) -> None:
+        self._status_ai.setText(f"AI: {person_segments}P / {vehicle_segments}V")
 
     def _on_recorder_stats(self, segments: int, total_bytes: int, active: int) -> None:
         if active == 0 and segments == 0:
