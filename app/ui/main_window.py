@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -126,25 +127,15 @@ class MainWindow(QMainWindow):
         spacer = QWidget(bar)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        self._probe_btn = QPushButton("TEST DVR", bar)
-        self._probe_btn.setObjectName("ToolbarAction")
-        self._probe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._probe_btn.setMinimumHeight(30)
-        self._probe_btn.clicked.connect(self._run_probe)
+        # RECONNECT ALL — live-mode only, visible at a glance because it's
+        # the most time-sensitive action.
+        self._reconnect_btn = QPushButton("↺  RECONNECT ALL", bar)
+        self._reconnect_btn.setObjectName("ToolbarAction")
+        self._reconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reconnect_btn.setMinimumHeight(30)
+        self._reconnect_btn.clicked.connect(self._reconnect_all)
 
-        self._discover_btn = QPushButton("DISCOVER", bar)
-        self._discover_btn.setObjectName("ToolbarAction")
-        self._discover_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._discover_btn.setMinimumHeight(30)
-        self._discover_btn.clicked.connect(self._run_discovery)
-
-        self._pbprobe_btn = QPushButton("PROBE PLAYBACK", bar)
-        self._pbprobe_btn.setObjectName("ToolbarAction")
-        self._pbprobe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pbprobe_btn.setMinimumHeight(30)
-        self._pbprobe_btn.setToolTip("Try common DVR playback protocols and report what works in the log console")
-        self._pbprobe_btn.clicked.connect(self._run_pbprobe)
-
+        # CONSOLE toggle — always visible, frequently used.
         self._console_btn = QPushButton("CONSOLE", bar)
         self._console_btn.setObjectName("ToolbarAction")
         self._console_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -152,19 +143,35 @@ class MainWindow(QMainWindow):
         self._console_btn.setCheckable(True)
         self._console_btn.clicked.connect(self._toggle_console)
 
-        self._wipe_btn = QPushButton("WIPE", bar)
-        self._wipe_btn.setObjectName("DangerAction")
-        self._wipe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._wipe_btn.setMinimumHeight(30)
-        self._wipe_btn.setToolTip("Delete recordings, caches, and other data (PIN-gated)")
-        self._wipe_btn.clicked.connect(self._open_wipe_dialog)
+        # ⚙ dropdown — infrequent / diagnostic / destructive actions grouped
+        # so they don't crowd the toolbar on every launch.
+        self._system_btn = QPushButton("⚙", bar)
+        self._system_btn.setObjectName("ToolbarAction")
+        self._system_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._system_btn.setMinimumHeight(30)
+        self._system_btn.setFixedWidth(40)
+        self._system_btn.setToolTip("System actions")
 
-        self._reconnect_btn = QPushButton("RECONNECT ALL", bar)
-        self._reconnect_btn.setObjectName("ToolbarAction")
-        self._reconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._reconnect_btn.setMinimumHeight(30)
-        self._reconnect_btn.setMinimumWidth(140)
-        self._reconnect_btn.clicked.connect(self._reconnect_all)
+        system_menu = QMenu(self._system_btn)
+        system_menu.setStyleSheet(
+            f"QMenu {{ background: #1f242e; border: 1px solid #2a3040; color: #ebe7e1; }}"
+            f"QMenu::item {{ padding: 6px 20px; }}"
+            f"QMenu::item:selected {{ background: #2a2017; color: #c69561; }}"
+            f"QMenu::separator {{ background: #2a3040; height: 1px; margin: 4px 0; }}"
+        )
+        self._act_probe    = system_menu.addAction("Test DVR Connection")
+        self._act_discover = system_menu.addAction("Discover DVR on LAN")
+        self._act_pbprobe  = system_menu.addAction("Probe Playback Protocols")
+        system_menu.addSeparator()
+        act_wipe = system_menu.addAction("Wipe Data…")
+        act_wipe.setToolTip("Delete recordings, caches and stored data (PIN-gated)")
+
+        self._act_probe.triggered.connect(self._run_probe)
+        self._act_discover.triggered.connect(self._run_discovery)
+        self._act_pbprobe.triggered.connect(self._run_pbprobe)
+        act_wipe.triggered.connect(self._open_wipe_dialog)
+
+        self._system_btn.setMenu(system_menu)
 
         layout.addWidget(brand)
         layout.addWidget(version)
@@ -172,12 +179,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._mode_live_btn)
         layout.addWidget(self._mode_pb_btn)
         layout.addWidget(spacer)
-        layout.addWidget(self._probe_btn)
-        layout.addWidget(self._discover_btn)
-        layout.addWidget(self._pbprobe_btn)
-        layout.addWidget(self._console_btn)
-        layout.addWidget(self._wipe_btn)
         layout.addWidget(self._reconnect_btn)
+        layout.addWidget(self._console_btn)
+        layout.addWidget(self._system_btn)
         return bar
 
     def _open_wipe_dialog(self) -> None:
@@ -190,19 +194,12 @@ class MainWindow(QMainWindow):
             self._mode_pb_btn.setChecked(False)
             self._stack.setCurrentIndex(0)
             self._reconnect_btn.setVisible(True)
-            self._probe_btn.setVisible(True)
-            self._discover_btn.setVisible(True)
-            self._pbprobe_btn.setVisible(True)
             bus.info("APP", "switched to LIVE mode")
         else:
             self._mode_live_btn.setChecked(False)
             self._mode_pb_btn.setChecked(True)
             self._stack.setCurrentIndex(1)
-            # Hide live-only actions while in playback to keep the bar tidy
             self._reconnect_btn.setVisible(False)
-            self._probe_btn.setVisible(False)
-            self._discover_btn.setVisible(False)
-            self._pbprobe_btn.setVisible(False)
             self._playback_view.refresh_library()
             bus.info("APP", "switched to PLAYBACK mode")
 
@@ -324,10 +321,9 @@ class MainWindow(QMainWindow):
             bus.info("PBPROBE", "playback probe already running; ignoring re-trigger")
             return
         self._pbprobe = PlaybackProbeWorker(self._settings, parent=self)
-        self._pbprobe_btn.setEnabled(False)
-        self._pbprobe.finished_with.connect(lambda _r: self._pbprobe_btn.setEnabled(True))
+        self._act_pbprobe.setEnabled(False)
+        self._pbprobe.finished_with.connect(lambda _r: self._act_pbprobe.setEnabled(True))
         self._pbprobe.start()
-        # Open the console so the user actually sees what the probe finds
         if not self._console.isVisible():
             self._console.show()
 
@@ -336,7 +332,6 @@ class MainWindow(QMainWindow):
             bus.info("DISC", "discovery already in progress")
             return
         cached = load_ip_cache(self._settings.env_path)
-        # MRU first; exclude the IP we already proved unreachable in the probe
         priority = tuple(r.ip for r in cached if r.ip != self._settings.dvr_ip)
         self._discovery = DiscoveryWorker(
             self._settings.dvr_port,
@@ -344,11 +339,11 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._discovery.completed.connect(self._on_discovery_done)
-        self._discover_btn.setEnabled(False)
+        self._act_discover.setEnabled(False)
         self._discovery.start()
 
     def _on_discovery_done(self, result: DiscoveryResult) -> None:
-        self._discover_btn.setEnabled(True)
+        self._act_discover.setEnabled(True)
         if result.found_ip is None:
             bus.warn("APP", "discovery finished with no DVR found")
             return
