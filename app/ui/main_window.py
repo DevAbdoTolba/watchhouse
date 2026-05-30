@@ -358,6 +358,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._refresh_clock.stop()
         if self._analyzer is not None:
+            # Finalize held cross-segment events while the recorder's segments
+            # still exist on disk, then stop the worker and the recorder.
+            self._analyzer.flush_all()
             self._analyzer.request_stop()
             self._analyzer.wait(3000)
         if self._recorder is not None:
@@ -477,6 +480,8 @@ class MainWindow(QMainWindow):
             recording_dir=self._settings.recording_dir,
             cam_ids=[cam.index for cam in self._cameras],
             armed=set(self._armed_cameras),
+            max_duration_s=self._settings.event_max_duration_s,
+            hold_timeout_s=self._settings.event_hold_timeout_s,
             parent=self,
         )
         self._analyzer.totals_changed.connect(self._on_ai_totals)

@@ -18,6 +18,7 @@ clip with a thumbnail under recordings/events/.
 from __future__ import annotations
 
 import queue
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,7 @@ from PySide6.QtCore import QThread, Signal
 
 from app.core import events as evt
 from app.core.detect import Detector
+from app.core.event_stitcher import EventStitcher, SegmentScan
 from app.core.log import bus
 
 
@@ -81,12 +83,16 @@ class SegmentAnalyzer(QThread):
         recording_dir: Path | None = None,
         cam_ids: list[int] | None = None,
         armed: set[int] | None = None,
+        max_duration_s: float = 120.0,
+        hold_timeout_s: float = 1800.0,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._detector = Detector(model_path, conf_threshold=conf)
         self._sample_seconds = max(0.2, sample_seconds)
         self._event_cfg = event_cfg or evt.EventConfig()
+        self._max_duration_s = max_duration_s
+        self._hold_timeout_s = hold_timeout_s
         self._events_dir = events_dir
         self._recording_dir = recording_dir
         self._cam_ids = list(cam_ids) if cam_ids else []
@@ -97,10 +103,55 @@ class SegmentAnalyzer(QThread):
         self._stop = False
         self._person_segments = 0
         self._vehicle_segments = 0
+        # Cross-segment carry-state. The writer is bound to this analyzer's
+        # output config; emit pushes finalized clips out via the Qt signal.
+        # A lock guards the stitcher because flush_all() can be called from the
+        # UI thread (window close) while the worker thread is otherwise idle.
+        self._stitch_lock = threading.Lock()
+        self._stitcher = EventStitcher(
+            cfg=self._event_cfg,
+            writer=self._write_chain,
+            emit=self._on_clip,
+            max_duration_s=self._max_duration_s,
+            hold_timeout_s=self._hold_timeout_s,
+        )
 
     def set_armed(self, armed: set[int]) -> None:
         """Update which cameras trigger event extraction (live, thread-safe)."""
         self._armed = set(armed)
+
+    def _write_chain(self, parts: list) -> "evt.EventClip | None":
+        try:
+            return evt.write_event_chain(
+                parts, self._events_dir, self._event_cfg,
+                self._recording_dir, self._cam_ids,
+            )
+        except Exception as e:
+            name = parts[0].path.name if parts else "?"
+            bus.error("EVT", f"event chain write failed near {name}: {e!s}")
+            return None
+
+    def _on_clip(self, clip) -> None:
+        if clip is None:
+            return
+        span = clip.duration_s
+        cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"
+        bus.info(
+            "EVT",
+            f"cam{clip.cam_id} triggered {clip.start_at:%H:%M:%S} {clip.label}  "
+            f"{span:.0f}s clip  captured [{cams}]  {clip.folder.name}",
+        )
+        self.event_extracted.emit(clip)
+
+    def flush_all(self) -> None:
+        """Finalize every held (open) event. Called on analyzer stop and from
+        the main window's close handler BEFORE the recorder stops, so a tail
+        with no following segment still becomes an event."""
+        with self._stitch_lock:
+            try:
+                self._stitcher.flush_all()
+            except Exception as e:
+                bus.error("EVT", f"flush_all failed: {e!s}")
 
     def enqueue(self, path: str) -> None:
         if not self._stop:
@@ -130,6 +181,8 @@ class SegmentAnalyzer(QThread):
                 self._analyze(path)
             except Exception as e:  # never let one bad file kill the thread
                 bus.error("AI", f"analyze failed for {path.name}: {e!s}")
+        # Drain any still-open held events so the last tail isn't lost on stop.
+        self.flush_all()
         bus.info("AI", "segment analyzer stopped")
 
     def _analyze(self, path: Path) -> None:
@@ -168,40 +221,76 @@ class SegmentAnalyzer(QThread):
 
         frames_sampled = person_frames = vehicle_frames = 0
         max_persons = max_vehicles = 0
+
+        def _consume(frame, offset_s: float) -> None:
+            nonlocal pending, frames_sampled, person_frames, vehicle_frames
+            nonlocal max_persons, max_vehicles
+            dets = self._detector.detect(frame)
+            n_person = sum(1 for d in dets if d.is_person)
+            n_vehicle = sum(1 for d in dets if d.is_vehicle)
+            frames_sampled += 1
+            person_frames += 1 if n_person else 0
+            vehicle_frames += 1 if n_vehicle else 0
+            max_persons = max(max_persons, n_person)
+            max_vehicles = max(max_vehicles, n_vehicle)
+            if extract and (n_person or n_vehicle):
+                if pending is not None and (offset_s - pending.t_end) > merge_gap:
+                    completed.append(pending)
+                    pending = None
+                if pending is None:
+                    pending = evt.PendingEvent(
+                        cam_id=cam_id, t_start=offset_s, t_end=offset_s
+                    )
+                pending.add(offset_s, n_person, n_vehicle, frame.copy(), dets)
+
         idx = 0
+        last_idx = -1
+        last_sampled_idx = -1
         while not self._stop:
             if not cap.grab():
                 break
+            last_idx = idx
             if idx % step == 0:
                 ok, frame = cap.retrieve()
                 if ok and frame is not None:
                     offset_s = (idx / fps) if fps > 0 else (idx * self._sample_seconds)
-                    dets = self._detector.detect(frame)
-                    n_person = sum(1 for d in dets if d.is_person)
-                    n_vehicle = sum(1 for d in dets if d.is_vehicle)
-                    frames_sampled += 1
-                    person_frames += 1 if n_person else 0
-                    vehicle_frames += 1 if n_vehicle else 0
-                    max_persons = max(max_persons, n_person)
-                    max_vehicles = max(max_vehicles, n_vehicle)
-                    if extract and (n_person or n_vehicle):
-                        if pending is not None and (offset_s - pending.t_end) > merge_gap:
-                            completed.append(pending)
-                            pending = None
-                        if pending is None:
-                            pending = evt.PendingEvent(
-                                cam_id=cam_id, t_start=offset_s, t_end=offset_s
-                            )
-                        pending.add(offset_s, n_person, n_vehicle, frame.copy(), dets)
+                    _consume(frame, offset_s)
+                    last_sampled_idx = idx
             idx += 1
+
+        # Tail-loss guard (Part A): the regular stride skips the frames between
+        # the last sampled multiple of `step` and EOF, so a detection in the
+        # final second could be missed entirely. Re-read the very last decoded
+        # frame and sample it too. We seek rather than reuse the buffer because
+        # the loop's exit `grab()` already failed (nothing left to retrieve).
+        if not self._stop and last_idx >= 0 and last_idx != last_sampled_idx:
+            tail_frame = None
+            if cap.set(cv2.CAP_PROP_POS_FRAMES, float(last_idx)):
+                ok, tail_frame = cap.read()
+                if not (ok and tail_frame is not None):
+                    tail_frame = None
+            if tail_frame is not None:
+                offset_s = (last_idx / fps) if fps > 0 else (last_idx * self._sample_seconds)
+                _consume(tail_frame, offset_s)
+
         cap.release()
         if pending is not None:
             completed.append(pending)
 
-        duration_s = (idx / fps) if fps > 0 else (idx * self._sample_seconds)
+        # Duration from actual frames decoded (EOF inclusive), not a sampled
+        # estimate - so the clip extractor's EOF check lines up with reality.
+        total_frames = last_idx + 1 if last_idx >= 0 else 0
+        duration_s = (total_frames / fps) if fps > 0 else (total_frames * self._sample_seconds)
+
         events_extracted = 0
-        if extract:
-            events_extracted = self._extract_events(path, seg_start, duration_s, completed)
+        if extract and seg_start is not None:
+            scan = SegmentScan(
+                cam_id=cam_id, path=path, seg_start=seg_start,
+                duration_s=duration_s, events=completed,
+            )
+            with self._stitch_lock:
+                clips = self._stitcher.feed(scan)
+            events_extracted = len(clips)
 
         result = SegmentResult(
             path=path,
@@ -228,34 +317,3 @@ class SegmentAnalyzer(QThread):
         )
         self.segment_analyzed.emit(result)
         self.totals_changed.emit(self._person_segments, self._vehicle_segments)
-
-    def _extract_events(
-        self,
-        path: Path,
-        seg_start: datetime,
-        duration_s: float,
-        pending: list[evt.PendingEvent],
-    ) -> int:
-        count = 0
-        for ev in pending:
-            try:
-                clip = evt.write_event(
-                    path, seg_start, duration_s, ev, self._events_dir,
-                    self._event_cfg, self._recording_dir, self._cam_ids,
-                )
-            except Exception as e:
-                bus.error("EVT", f"event write failed in {path.name}: {e!s}")
-                continue
-            if clip is None:
-                continue
-            count += 1
-            span = ev.t_end - ev.t_start
-            cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"
-            bus.info(
-                "EVT",
-                f"cam{clip.cam_id} triggered {clip.start_at:%H:%M:%S} {clip.label}  "
-                f"presence {span:.0f}s -> {clip.duration_s:.0f}s clip  "
-                f"captured [{cams}]  {clip.folder.name}",
-            )
-            self.event_extracted.emit(clip)
-        return count

@@ -83,6 +83,9 @@ class Settings:
     event_post_roll_s: float
     event_merge_gap_s: float
     event_min_hits: int
+    # Cross-segment stitching (v0.4.19)
+    event_max_duration_s: float    # force-split a continuous presence past this
+    event_hold_timeout_s: float    # flush a held (open) event after this wall time
     events_dir: Path
     # Telegram push notifications (v0.4.13). Off unless both are set.
     telegram_bot_token: str
@@ -131,6 +134,8 @@ class Settings:
             event_post_roll_s=float(os.environ.get("EVENT_POST_ROLL_SECONDS", "5")),
             event_merge_gap_s=float(os.environ.get("EVENT_MERGE_GAP_SECONDS", "5")),
             event_min_hits=max(1, int(os.environ.get("EVENT_MIN_HITS", "2"))),
+            event_max_duration_s=float(os.environ.get("EVENT_MAX_DURATION_SECONDS", "120")),
+            event_hold_timeout_s=_event_hold_timeout_s(),
             events_dir=Path(os.environ.get("EVENT_DIR", str(rec_dir / "events"))),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
@@ -160,6 +165,7 @@ class Settings:
             f"events: enabled={s.event_extraction_enabled} "
             f"pre={s.event_pre_roll_s:g}s post={s.event_post_roll_s:g}s "
             f"merge_gap={s.event_merge_gap_s:g}s min_hits={s.event_min_hits} "
+            f"max_dur={s.event_max_duration_s:g}s hold={s.event_hold_timeout_s:g}s "
             f"dir={s.events_dir}",
         )
         bus.info(
@@ -207,6 +213,21 @@ def _retention_minutes() -> int:
     if (days := os.environ.get("RECORDING_RETENTION_DAYS")) is not None:
         return max(1, int(days)) * 1440
     return 90  # default: 90-minute sliding window
+
+
+def _event_hold_timeout_s() -> float:
+    """How long a held (still-open) event waits for its contiguous next segment
+    before being flushed on its own. Default = 2x the segment length (so a
+    normal rollover always arrives first), floored at 5 minutes. Explicit
+    EVENT_HOLD_TIMEOUT_SECONDS overrides. Kept well under retention so a held
+    event never references an already-pruned segment."""
+    if (raw := os.environ.get("EVENT_HOLD_TIMEOUT_SECONDS")) is not None:
+        return max(60.0, float(raw))
+    seg_min = int(os.environ.get("RECORDING_SEGMENT_MINUTES", "15"))
+    hold = max(5.0, 2 * seg_min) * 60.0
+    retention_s = _retention_minutes() * 60.0
+    # Never let a hold outlive the rolling buffer; leave a one-segment margin.
+    return min(hold, max(60.0, retention_s - seg_min * 60.0))
 
 
 def _fmt_minutes(m: int) -> str:
