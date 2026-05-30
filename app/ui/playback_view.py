@@ -57,6 +57,20 @@ from app.ui.import_clip_dialog import ImportClipDialog
 from app.ui.timeline_drawer import TimelineDrawer
 
 
+class _StayOpenMenu(QMenu):
+    """A QMenu that stays open when a *checkable* action is clicked, so the user
+    can toggle several items (e.g. the camera filter) in one pass. A plain
+    QMenu dismisses on any trigger; here a checkable item toggles in place and
+    only a non-checkable item, Esc, or click-away closes it."""
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 (Qt)
+        action = self.activeAction()
+        if action is not None and action.isEnabled() and action.isCheckable():
+            action.trigger()  # toggles + emits toggled(); menu stays visible
+            return
+        super().mouseReleaseEvent(event)
+
+
 class _SessionExportWorker(QObject):
     """Runs export_session off the UI thread (a concat of hours of clips can
     take a while). Lives on its own QThread; reports done via `finished`."""
@@ -410,7 +424,7 @@ class PlaybackView(QWidget):
         btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        menu = QMenu(btn)
+        menu = _StayOpenMenu(btn)
         menu.setStyleSheet(
             """
             QMenu {
