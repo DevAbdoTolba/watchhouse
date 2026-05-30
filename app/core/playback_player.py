@@ -90,7 +90,7 @@ class PlaybackPlayer(QThread):
 
     def set_speed(self, s: float) -> None:
         with QMutexLocker(self._mutex):
-            self._speed = max(0.25, min(8.0, s))
+            self._speed = max(0.25, min(16.0, s))
 
     def seek_seconds(self, offset_s: float) -> None:
         with QMutexLocker(self._mutex):

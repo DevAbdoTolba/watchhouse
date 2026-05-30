@@ -938,16 +938,32 @@ class PlaybackView(QWidget):
         speed_label = QLabel("SPEED", bar)
         speed_label.setObjectName("DialogFieldLabel")
         h.addWidget(speed_label)
-        self._speed_buttons: dict[float, QPushButton] = {}
-        for s in (0.5, 1.0, 2.0, 4.0):
-            b = QPushButton(f"{s:g}x", bar)
-            b.setObjectName("SpeedButton")
-            b.setCheckable(True)
-            b.setFixedSize(36, 24)
-            b.setChecked(s == 1.0)
-            b.clicked.connect(lambda _checked, sp=s: self._set_speed(sp))
-            self._speed_buttons[s] = b
-            h.addWidget(b)
+        # Compact speed stepper: ‹ [1×] › cycles .25 .5 1 2 4 8 16 without a
+        # long button row or a dropdown. The middle pill shows the current
+        # value (click to snap back to 1×); the arrows step and auto-disable
+        # at the ends.
+        self._speeds = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
+        self._speed_idx = self._speeds.index(1.0)
+        self._speed_down = QPushButton("‹", bar)
+        self._speed_down.setObjectName("SpeedButton")
+        self._speed_down.setFixedSize(24, 24)
+        self._speed_down.setToolTip("Slower")
+        self._speed_down.clicked.connect(lambda: self._step_speed(-1))
+        self._speed_pill = QPushButton("1×", bar)
+        self._speed_pill.setObjectName("SpeedButton")
+        self._speed_pill.setCheckable(True)
+        self._speed_pill.setChecked(True)
+        self._speed_pill.setFixedSize(46, 24)
+        self._speed_pill.setToolTip("Playback speed — click to reset to 1×")
+        self._speed_pill.clicked.connect(lambda: self._set_speed(1.0))
+        self._speed_up = QPushButton("›", bar)
+        self._speed_up.setObjectName("SpeedButton")
+        self._speed_up.setFixedSize(24, 24)
+        self._speed_up.setToolTip("Faster")
+        self._speed_up.clicked.connect(lambda: self._step_speed(1))
+        h.addWidget(self._speed_down)
+        h.addWidget(self._speed_pill)
+        h.addWidget(self._speed_up)
 
         h.addSpacing(16)
         self._boxes_btn = QPushButton("BOXES", bar)
@@ -1089,10 +1105,25 @@ class PlaybackView(QWidget):
         self._cursor = self._cursor + timedelta(seconds=seconds)
         self._load_all_at_cursor()
 
+    def _step_speed(self, direction: int) -> None:
+        idx = max(0, min(len(self._speeds) - 1, self._speed_idx + direction))
+        self._set_speed(self._speeds[idx])
+
     def _set_speed(self, s: float) -> None:
+        # Snap to the nearest preset so the pill always shows a real value.
+        if s in self._speeds:
+            self._speed_idx = self._speeds.index(s)
+        else:
+            self._speed_idx = min(
+                range(len(self._speeds)),
+                key=lambda i: abs(self._speeds[i] - s),
+            )
+            s = self._speeds[self._speed_idx]
         self._speed = s
-        for sp, btn in self._speed_buttons.items():
-            btn.setChecked(sp == s)
+        self._speed_pill.setText(f"{s:g}×")
+        self._speed_pill.setChecked(True)
+        self._speed_down.setEnabled(self._speed_idx > 0)
+        self._speed_up.setEnabled(self._speed_idx < len(self._speeds) - 1)
         for tile in self._tiles:
             tile.set_speed(s)
 
