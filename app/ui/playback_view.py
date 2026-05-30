@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -217,6 +218,29 @@ class PlaybackTile(QFrame):
             self._sub.setText("error")
 
 
+class _ScrubSlider(QSlider):
+    """Horizontal slider where clicking anywhere on the groove jumps the handle
+    to that spot (the default QSlider only page-steps toward a groove click)."""
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt)
+        if event.button() == Qt.MouseButton.LeftButton:
+            span = self.maximum() - self.minimum()
+            if span > 0 and self.width() > 0:
+                frac = event.position().x() / self.width()
+                frac = min(1.0, max(0.0, frac))
+                value = self.minimum() + round(frac * span)
+                self.setValue(value)
+                self.sliderPressed.emit()
+                self.sliderMoved.emit(value)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt)
+        super().mouseReleaseEvent(event)
+        self.sliderReleased.emit()
+
+
 class PlaybackView(QWidget):
     """The PLAYBACK mode's central widget. Owns the calendar, camera
     checkboxes, the 4 PlaybackTiles, the timeline, and the transport."""
@@ -250,6 +274,8 @@ class PlaybackView(QWidget):
         self._all_sessions: list[EventSession] = []  # full, day-agnostic
         self._thumb_loader = ThumbnailLoader(self)
         self._event_pos = 0.0  # clip-relative seconds, for stepping + label
+        self._event_duration = 0.0  # trigger clip length (s); 0 until known
+        self._scrubbing = False  # user is dragging the scrub bar right now
         self._event_conf_min = 0.0  # min human-detection confidence to show (0..1)
         self._event_cam_filter: set[int] = {c.index for c in cameras}  # trigger cams to show
         self._cam_filter_actions: dict[int, QAction] = {}
@@ -286,6 +312,14 @@ class PlaybackView(QWidget):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._periodic_refresh)
         self._refresh_timer.start(30_000)
+
+        # Bind ALL tile players' position/duration/state once. The handlers
+        # check whether the emitting player is the current event's trigger
+        # tile, so switching events needs no connect/disconnect churn.
+        for tile in self._tiles:
+            tile._player.position_changed.connect(self._on_player_position)
+            tile._player.duration_known.connect(self._on_player_duration)
+            tile._player.state_changed.connect(self._on_player_state)
 
         self.refresh_library()
         self._cursor_tick = QTimer(self)
@@ -550,6 +584,8 @@ class PlaybackView(QWidget):
         self._rec_section.setVisible(mode == "recordings")
         self._events_section.setVisible(mode == "events")
         self._timeline.setVisible(mode == "recordings")
+        # Scrub bar is the events-mode scrubber; recordings use the timeline.
+        self._scrub_row.setVisible(mode == "events")
         # Stepping is finer inside short event clips.
         self._set_step(1 if mode == "events" else 5)
         self._is_playing = False
@@ -565,6 +601,7 @@ class PlaybackView(QWidget):
             self._current_session = None
             self._current_event = None
             self._save_full_btn.setEnabled(False)
+            self._reset_scrub()
             self.refresh_events()
             for t in self._tiles:
                 t.load_path(None)
@@ -654,6 +691,8 @@ class PlaybackView(QWidget):
         ev = session.members[0]  # selecting a session plays its first member
         self._current_event = ev
         self._event_pos = 0.0
+        # New event: reset the scrub bar; duration_known repopulates the total.
+        self._reset_scrub()
         # Selecting an event starts it immediately - no separate Play click.
         self._is_playing = True
         self._play_btn.set_kind(IconButton.KIND_PAUSE)
@@ -777,9 +816,41 @@ class PlaybackView(QWidget):
     def _build_transport(self) -> QWidget:
         bar = QWidget(self)
         bar.setObjectName("TransportBar")
-        bar.setFixedHeight(44)
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(14, 0, 14, 0)
+        bar.setFixedHeight(82)
+        outer = QVBoxLayout(bar)
+        outer.setContentsMargins(14, 6, 14, 6)
+        outer.setSpacing(6)
+
+        # Scrub row (events mode only): [cur] [=====slider=====] [total].
+        # Bound to the trigger camera's real decoder position; hidden in
+        # recordings mode, where the TimelineDrawer is the scrubber instead.
+        mono_font = QFont("Cascadia Code", 10)
+        self._scrub_row = QWidget(bar)
+        sr = QHBoxLayout(self._scrub_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setSpacing(10)
+        self._scrub_cur = QLabel("00:00", self._scrub_row)
+        self._scrub_cur.setObjectName("ScrubTime")
+        self._scrub_cur.setFont(mono_font)
+        self._scrub = _ScrubSlider(Qt.Orientation.Horizontal, self._scrub_row)
+        self._scrub.setObjectName("EventScrub")
+        self._scrub.setRange(0, 1000)
+        self._scrub.setEnabled(False)
+        self._scrub.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._scrub.sliderPressed.connect(self._scrub_pressed)
+        self._scrub.sliderMoved.connect(self._scrub_moved)
+        self._scrub.sliderReleased.connect(self._scrub_released)
+        self._scrub_total = QLabel("--:--", self._scrub_row)
+        self._scrub_total.setObjectName("ScrubTime")
+        self._scrub_total.setFont(mono_font)
+        sr.addWidget(self._scrub_cur)
+        sr.addWidget(self._scrub, 1)
+        sr.addWidget(self._scrub_total)
+        outer.addWidget(self._scrub_row)
+
+        row_wrap = QWidget(bar)
+        h = QHBoxLayout(row_wrap)
+        h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(10)
 
         self._jump_back_btn = IconButton(IconButton.KIND_SKIP_BACK, "", bar)
@@ -847,6 +918,7 @@ class PlaybackView(QWidget):
         self._cursor_label.setObjectName("StatusBarText")
         h.addWidget(self._cursor_label)
 
+        outer.addWidget(row_wrap)
         return bar
 
     # --- Library / day ---
@@ -952,10 +1024,14 @@ class PlaybackView(QWidget):
         if self._mode == "events":
             if self._current_event is None:
                 return
-            self._event_pos = max(0.0, self._event_pos + seconds)
+            target = max(0.0, self._event_pos + seconds)
+            if self._event_duration > 0:
+                target = min(target, self._event_duration)
+            self._event_pos = target
             for tile in self._tiles:
                 if tile._camera.index in self._current_event.clips:
-                    tile.seek(self._event_pos)
+                    tile.seek(target)
+            self._sync_scrub_to_pos(target)
             self._update_event_label()
             return
         self._cursor = self._cursor + timedelta(seconds=seconds)
@@ -973,13 +1049,121 @@ class PlaybackView(QWidget):
         for sec, btn in self._step_buttons.items():
             btn.setChecked(sec == seconds)
 
+    # --- Event scrub bar ---
+
+    @staticmethod
+    def _format_secs(seconds: float) -> str:
+        """Seconds -> MM:SS (or H:MM:SS past an hour)."""
+        total = int(max(0.0, seconds))
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+
+    def _trigger_tile(self) -> "PlaybackTile | None":
+        """The reference tile for the current event (the trigger camera)."""
+        if self._current_event is None:
+            return None
+        for tile in self._tiles:
+            if tile._camera.index == self._current_event.trigger_cam:
+                return tile
+        return None
+
+    def _is_trigger_sender(self) -> bool:
+        """True when the signal's emitting player is the trigger tile's."""
+        trig = self._trigger_tile()
+        return trig is not None and self.sender() is trig._player
+
+    def _reset_scrub(self) -> None:
+        """Zero the scrub bar + labels until the next duration_known arrives."""
+        self._event_duration = 0.0
+        self._scrubbing = False
+        self._scrub.blockSignals(True)
+        self._scrub.setValue(0)
+        self._scrub.blockSignals(False)
+        self._scrub.setEnabled(False)
+        self._scrub_cur.setText("00:00")
+        self._scrub_total.setText("--:--")
+
+    def _sync_scrub_to_pos(self, seconds: float) -> None:
+        """Move the slider + current-time label to match `seconds` (no signals)."""
+        if self._event_duration > 0:
+            permille = round(seconds / self._event_duration * 1000)
+            permille = min(1000, max(0, permille))
+            self._scrub.blockSignals(True)
+            self._scrub.setValue(permille)
+            self._scrub.blockSignals(False)
+        self._scrub_cur.setText(self._format_secs(seconds))
+
+    def _scrub_on_duration(self, dur: float) -> None:
+        self._event_duration = float(dur or 0.0)
+        if self._event_duration > 0:
+            self._scrub.setEnabled(True)
+            self._scrub_total.setText(self._format_secs(self._event_duration))
+        else:
+            self._scrub.setEnabled(False)
+            self._scrub_total.setText("--:--")
+
+    def _scrub_on_position(self, pos: float) -> None:
+        self._event_pos = float(pos or 0.0)
+        if not self._scrubbing:
+            self._sync_scrub_to_pos(self._event_pos)
+        self._update_event_label()
+
+    def _scrub_seek_to_permille(self, value: int) -> float:
+        """Seek every angle of the current event to the given permille spot."""
+        if self._event_duration <= 0:
+            return 0.0
+        seconds = value / 1000.0 * self._event_duration
+        for tile in self._tiles:
+            if (self._current_event is not None
+                    and tile._camera.index in self._current_event.clips):
+                tile.seek(seconds)
+        self._event_pos = seconds
+        self._scrub_cur.setText(self._format_secs(seconds))
+        self._update_event_label()
+        return seconds
+
+    @Slot(float)
+    def _on_player_position(self, pos: float) -> None:
+        if self._mode == "events" and self._is_trigger_sender():
+            self._scrub_on_position(pos)
+
+    @Slot(float)
+    def _on_player_duration(self, dur: float) -> None:
+        if self._mode == "events" and self._is_trigger_sender():
+            self._scrub_on_duration(dur)
+
+    @Slot(str)
+    def _on_player_state(self, state: str) -> None:
+        # When the trigger clip ends, leave the bar pinned at the end.
+        if (state == "eof" and self._mode == "events"
+                and self._is_trigger_sender() and self._event_duration > 0):
+            self._scrub.blockSignals(True)
+            self._scrub.setValue(1000)
+            self._scrub.blockSignals(False)
+            self._scrub_cur.setText(self._format_secs(self._event_duration))
+
+    @Slot()
+    def _scrub_pressed(self) -> None:
+        self._scrubbing = True
+
+    @Slot(int)
+    def _scrub_moved(self, value: int) -> None:
+        self._scrub_seek_to_permille(value)
+
+    @Slot()
+    def _scrub_released(self) -> None:
+        self._scrub_seek_to_permille(self._scrub.value())
+        self._scrubbing = False
+
     def _advance_cursor(self) -> None:
         if not self._is_playing:
             return
         if self._mode == "events":
-            # Players advance themselves; we only track position for the label.
-            self._event_pos += 0.25 * self._speed
-            self._update_event_label()
+            # In events mode the trigger player's real position_changed drives
+            # _event_pos + the scrub bar; nothing to estimate here.
             return
         # Advance by elapsed wall time * speed
         self._cursor = self._cursor + timedelta(seconds=0.25 * self._speed)

@@ -516,6 +516,36 @@ QLineEdit:focus {{
     border-radius: 2px;
 }}
 
+#ScrubTime {{
+    color: {TEXT_MUTED};
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+}}
+
+QSlider#EventScrub::groove:horizontal {{
+    height: 5px;
+    background: {BORDER};
+    border-radius: 2px;
+}}
+QSlider#EventScrub::sub-page:horizontal {{
+    background: {ACCENT};
+    border-radius: 2px;
+}}
+QSlider#EventScrub::handle:horizontal {{
+    width: 13px;
+    height: 13px;
+    margin: -5px 0;
+    border-radius: 6px;
+    background: {ACCENT};
+}}
+QSlider#EventScrub:disabled::sub-page:horizontal {{
+    background: {BORDER_2};
+}}
+QSlider#EventScrub:disabled::handle:horizontal {{
+    background: {BORDER_2};
+}}
+
 QPushButton#PrimaryAction {{
     background-color: {ACCENT_BG};
     border: 1px solid {ACCENT};
