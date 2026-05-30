@@ -28,6 +28,7 @@ from app.core.playback_probe import PlaybackProbeWorker
 from app.core.probe import ProbeWorker
 from app.core.analyzer import SegmentAnalyzer
 from app.core.events import EventConfig
+from app.core.notifier import TelegramNotifier
 from app.core.recorder import RecorderSupervisor
 from app.ui.camera_tile import CameraTile
 from app.ui.grid_focus import GridFocus
@@ -55,6 +56,24 @@ class MainWindow(QMainWindow):
         self._armed_cameras: set[int] = {
             c.index for c in self._cameras if c.index in settings.detection_cameras
         }
+        # Human label per camera for alert captions - prefer the descriptive
+        # location ("Entry threshold (interior)") over the terse tile title
+        # ("CAM 02"). Defensive getattr so this never raises.
+        self._cam_labels: dict[int, str] = {
+            c.index: (
+                getattr(c, "location", None)
+                or getattr(c, "label", None)
+                or f"camera {c.index}"
+            )
+            for c in self._cameras
+        }
+        # Off-device push alerts; no-op unless TELEGRAM_* is configured in .env.
+        self._notifier = TelegramNotifier(
+            settings.telegram_bot_token,
+            settings.telegram_chat_id,
+            min_interval_s=settings.telegram_min_interval_s,
+            parent=self,
+        )
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -440,6 +459,7 @@ class MainWindow(QMainWindow):
             f"event saved: cam{clip.cam_id} triggered {clip.start_at:%H:%M:%S} "
             f"{clip.label}  ({cams})  -> {clip.folder}",
         )
+        self._notifier.notify(clip, self._cam_labels.get(clip.cam_id))
 
     def _on_ai_totals(self, person_segments: int, vehicle_segments: int) -> None:
         self._status_ai.setText(self._ai_status_text(person_segments, vehicle_segments))

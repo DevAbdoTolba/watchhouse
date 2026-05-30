@@ -84,6 +84,10 @@ class Settings:
     event_merge_gap_s: float
     event_min_hits: int
     events_dir: Path
+    # Telegram push notifications (v0.4.13). Off unless both are set.
+    telegram_bot_token: str
+    telegram_chat_id: str
+    telegram_min_interval_s: float
 
     @classmethod
     def load(cls) -> "Settings":
@@ -128,6 +132,9 @@ class Settings:
             event_merge_gap_s=float(os.environ.get("EVENT_MERGE_GAP_SECONDS", "5")),
             event_min_hits=max(1, int(os.environ.get("EVENT_MIN_HITS", "2"))),
             events_dir=Path(os.environ.get("EVENT_DIR", str(rec_dir / "events"))),
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
+            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
+            telegram_min_interval_s=float(os.environ.get("TELEGRAM_MIN_INTERVAL_SECONDS", "20")),
         )
         bus.info(
             "CFG",
@@ -154,6 +161,11 @@ class Settings:
             f"pre={s.event_pre_roll_s:g}s post={s.event_post_roll_s:g}s "
             f"merge_gap={s.event_merge_gap_s:g}s min_hits={s.event_min_hits} "
             f"dir={s.events_dir}",
+        )
+        bus.info(
+            "CFG",
+            f"telegram: {'configured' if (s.telegram_bot_token and s.telegram_chat_id) else 'not set'} "
+            f"(min_interval={s.telegram_min_interval_s:g}s)",
         )
         return s
 
