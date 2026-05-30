@@ -178,6 +178,7 @@ class EditableLabel(QWidget):
 
         self._label.double_clicked.connect(self._start)
         self._edit.returnPressed.connect(lambda: self._finish(commit=True))
+        self._edit.textChanged.connect(self._fit_to_text)
         self._edit.installEventFilter(self)
 
     def _relayout(self) -> None:
@@ -187,6 +188,18 @@ class EditableLabel(QWidget):
         parent = self.parentWidget()
         if parent is not None and parent.layout() is not None:
             parent.layout().activate()
+
+    def _fit_to_text(self) -> None:
+        """Size the field to comfortably show all of its text (any script,
+        incl. RTL/Arabic) so nothing is ever clipped, with a sane floor and
+        ceiling. Re-runs on every keystroke so it grows as you type."""
+        if not self._editing:
+            return
+        fm = self._edit.fontMetrics()
+        # text advance + left/right padding + cursor + border slack
+        needed = fm.horizontalAdvance(self._edit.text()) + 32
+        self.setMinimumWidth(max(160, min(needed, 360)))
+        self._relayout()
 
     def set_display(self, text: str) -> None:
         self._label.setText(text)
@@ -198,18 +211,26 @@ class EditableLabel(QWidget):
         if self._editing:
             return
         self._editing = True
+        # While editing, claim header space (the tile gives the label an
+        # Ignored policy so it never dictates width; switch to Expanding so the
+        # field can grow by taking from the trailing spacer). Restored on finish.
+        self._saved_policy = self.sizePolicy()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._edit.setText(self._label.text())
-        self._edit.selectAll()
-        self.setMinimumWidth(180)        # room to type; spacer yields it back
         self._stack.setCurrentWidget(self._edit)
+        self._fit_to_text()              # size to current content immediately
         self._edit.setFocus()
+        self._edit.selectAll()
 
     def _finish(self, commit: bool) -> None:
         if not self._editing:
             return
         self._editing = False
         self.setMinimumWidth(0)
+        if hasattr(self, "_saved_policy"):
+            self.setSizePolicy(self._saved_policy)
         self._stack.setCurrentWidget(self._label)
+        self._relayout()
         if commit:
             self.committed.emit(self._edit.text())
 
