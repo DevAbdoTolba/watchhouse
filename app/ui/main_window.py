@@ -230,6 +230,26 @@ class MainWindow(QMainWindow):
             tile.set_display_name(self._cam_labels[cam.index])
         bus.info("APP", "camera names updated")
 
+    @Slot(int, str)
+    def _on_tile_renamed(self, cam_index: int, raw: str) -> None:
+        name = camera_names.clean_name(raw)
+        cam = next((c for c in self._cameras if c.index == cam_index), None)
+        if cam is None:
+            return
+        default = getattr(cam, "location", None) or getattr(cam, "label", None) or ""
+        # Typing the default (or clearing the field) means "no custom name".
+        if not name or name == default:
+            self._camera_names.pop(cam_index, None)
+        else:
+            self._camera_names[cam_index] = name
+        camera_names.save(self._settings.env_path, self._camera_names)
+        self._cam_labels = {
+            c.index: self._effective_cam_name(c) for c in self._cameras
+        }
+        for tile, c in zip(self._tiles, self._cameras):
+            tile.set_display_name(self._cam_labels[c.index])
+        bus.info("APP", f"cam{cam_index} renamed -> {self._cam_labels[cam_index]}")
+
     def _set_mode(self, mode: str) -> None:
         if mode == "live":
             self._mode_live_btn.setChecked(True)
@@ -270,6 +290,7 @@ class MainWindow(QMainWindow):
             default_stream = settings.cam_defaults[i]
             tile = CameraTile(cam, settings, default_stream, parent=wrap)
             tile.event_arm_toggled.connect(self._on_arm_toggled)
+            tile.rename_committed.connect(self._on_tile_renamed)
             tiles.append(tile)
             row, col = divmod(i, 2)
             grid.addWidget(tile, row, col)

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
+    QStackedLayout,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -135,6 +137,84 @@ class _InfoButton(QPushButton):
         super().leaveEvent(event)
 
 
+class _ClickLabel(QLabel):
+    """QLabel that reports its own double-click (so it doesn't bubble up to the
+    tile's maximize handler) - the hook for inline renaming."""
+
+    double_clicked = Signal()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt)
+        self.double_clicked.emit()
+        event.accept()
+
+
+class EditableLabel(QWidget):
+    """A header label that turns into an inline text field on double-click.
+
+    Enter commits (emits `committed` with the raw text); Esc or focus-out
+    cancels back to the label. Used for renaming a camera in place."""
+
+    committed = Signal(str)
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._editing = False
+        self._stack = QStackedLayout(self)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+
+        self._label = _ClickLabel(text, self)
+        self._label.setObjectName("TileLocation")  # keep theme styling
+
+        self._edit = QLineEdit(self)
+        self._edit.setObjectName("TileNameEdit")
+        self._edit.setMaxLength(40)
+        self._edit.setStyleSheet(
+            "QLineEdit#TileNameEdit { background:#161a22; color:#ebe7e1;"
+            " border:1px solid #c69561; border-radius:3px; padding:0 4px; }"
+        )
+
+        self._stack.addWidget(self._label)
+        self._stack.addWidget(self._edit)
+
+        self._label.double_clicked.connect(self._start)
+        self._edit.returnPressed.connect(lambda: self._finish(commit=True))
+        self._edit.installEventFilter(self)
+
+    def set_display(self, text: str) -> None:
+        self._label.setText(text)
+
+    def text(self) -> str:
+        return self._label.text()
+
+    def _start(self) -> None:
+        if self._editing:
+            return
+        self._editing = True
+        self._edit.setText(self._label.text())
+        self._edit.selectAll()
+        self.setMinimumWidth(180)        # room to type; spacer yields it back
+        self._stack.setCurrentWidget(self._edit)
+        self._edit.setFocus()
+
+    def _finish(self, commit: bool) -> None:
+        if not self._editing:
+            return
+        self._editing = False
+        self.setMinimumWidth(0)
+        self._stack.setCurrentWidget(self._label)
+        if commit:
+            self.committed.emit(self._edit.text())
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt)
+        if obj is self._edit:
+            if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                self._finish(commit=False)
+                return True
+            if event.type() == QEvent.Type.FocusOut:
+                self._finish(commit=True)  # clicking away saves what's typed
+        return super().eventFilter(obj, event)
+
+
 class CameraTile(QFrame):
     """Header + VideoPanel for one camera. Owns the StreamWorker thread."""
 
@@ -142,6 +222,8 @@ class CameraTile(QFrame):
     event_arm_toggled = Signal(int, bool)
     # (camera index, shift_held) - emitted on double-click for focus/maximize.
     double_clicked = Signal(int, bool)
+    # (camera index, raw_text) - emitted when the user renames inline.
+    rename_committed = Signal(int, str)
 
     def __init__(self, camera: Camera, settings: Settings, default_stream: str, parent=None) -> None:
         super().__init__(parent)
@@ -172,8 +254,11 @@ class CameraTile(QFrame):
         name = QLabel(camera.label, header)
         name.setObjectName("TileName")
 
-        location = QLabel(camera.location, header)
-        location.setObjectName("TileLocation")
+        location = EditableLabel(camera.location, header)
+        location.setToolTip("Double-click to rename this camera")
+        location.committed.connect(
+            lambda text: self.rename_committed.emit(self._camera.index, text)
+        )
         self._location_label = location
         # Don't let the location text dictate the column width; if the tile
         # narrows, the label squishes (and clips) before the column stretches.
@@ -292,7 +377,7 @@ class CameraTile(QFrame):
 
     def set_display_name(self, name: str) -> None:
         """Update the header's descriptive name (custom rename or default)."""
-        self._location_label.setText(name or self._camera.location)
+        self._location_label.set_display(name or self._camera.location)
 
     # Internal
 
