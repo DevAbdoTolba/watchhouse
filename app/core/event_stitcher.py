@@ -93,21 +93,36 @@ class _Presence:
     `start_wall` is the wall-clock the presence first began; `last_end_wall` is
     the wall-clock of the most recent activity seen for it. `emitted` counts how
     many clips this presence has already produced, so the first one can be
-    tagged "started" and a final-without-any-prior-emit one "single"."""
+    tagged "started" and a final-without-any-prior-emit one "single".
+
+    `session_id` is a stable, deterministic id minted at presence start
+    (cam + start wall-clock) and shared by every cap-split chunk of this
+    presence, so the UI can group them and stitch the whole presence on
+    demand."""
 
     start_wall: datetime
     last_end_wall: datetime
     emitted: int = 0
+    session_id: str = ""
 
     def span_s(self) -> float:
         return max(0.0, (self.last_end_wall - self.start_wall).total_seconds())
 
 
-# Writer signature: (parts, presence_state, presence_seconds) -> EventClip|None.
+# Writer signature:
+#   (parts, presence_state, presence_seconds,
+#    session_id, session_index, session_final) -> EventClip|None.
 # The analyzer binds the events_dir / cfg / recording_dir / cam_ids; the stitcher
-# supplies the parts plus the presence lifecycle tag for that clip.
-Writer = Callable[[list, str, float], object]
+# supplies the parts plus the presence lifecycle tag and session identity.
+Writer = Callable[[list, str, float, str, int, bool], object]
 Emit = Callable[[object], None]
+
+
+def _make_session_id(cam: int, start_wall: datetime) -> str:
+    """Deterministic, human-readable session id: cam + presence-start wall
+    clock. No clock-now / randomness (unavailable here and would break the
+    re-seed sharing); the presence start is unique per camera."""
+    return f"{cam}-{start_wall:%Y%m%dT%H%M%S}"
 
 
 class EventStitcher:
@@ -224,7 +239,10 @@ class EventStitcher:
         moved (it survives cap-split re-seeds)."""
         pres = self._presence.get(cam)
         if pres is None:
-            self._presence[cam] = _Presence(start_wall=start, last_end_wall=end)
+            self._presence[cam] = _Presence(
+                start_wall=start, last_end_wall=end,
+                session_id=_make_session_id(cam, start),
+            )
         else:
             pres.last_end_wall = max(pres.last_end_wall, end)
 
@@ -312,9 +330,15 @@ class EventStitcher:
             if ev is trailing:
                 continue
             # A non-held standalone interval starts and ends within this emit:
-            # a normal short alert. Its span is just the interval length.
+            # a normal short alert. Its span is just the interval length. A
+            # "single" is its own one-member session, identified by itself.
             span = max(0.0, ev.t_end - ev.t_start)
-            clip = self._writer([self._new_part(scan, ev)], "single", span)
+            sid = _make_session_id(
+                scan.cam_id, scan.seg_start + timedelta(seconds=ev.t_start)
+            )
+            clip = self._writer(
+                [self._new_part(scan, ev)], "single", span, sid, 0, True
+            )
             if clip is not None:
                 self._emit(clip)
                 clips.append(clip)
@@ -348,9 +372,13 @@ class EventStitcher:
             pres.last_end_wall = max(pres.last_end_wall, held.end_wall)
             span = pres.span_s()
             first_emit = pres.emitted == 0
+            session_id = pres.session_id
+            session_index = pres.emitted
         else:
             span = held.total_span_s()
             first_emit = True
+            session_id = _make_session_id(cam, held.start_wall)
+            session_index = 0
 
         if state == "ended" and first_emit:
             out_state = "single"   # started and ended without any mid-presence ping
@@ -359,7 +387,11 @@ class EventStitcher:
         else:
             out_state = state      # "ongoing" continuation or final "ended"
 
-        clip = self._writer(list(held.parts), out_state, span)
+        session_final = state == "ended"
+        clip = self._writer(
+            list(held.parts), out_state, span,
+            session_id, session_index, session_final,
+        )
 
         if pres is not None:
             if state == "ended":

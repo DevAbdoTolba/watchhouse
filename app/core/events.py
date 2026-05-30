@@ -120,6 +120,14 @@ class EventClip:
     # `presence_seconds` is the total wall span of the whole presence so far.
     presence_state: str = "single"
     presence_seconds: float = 0.0
+    # Presence-session grouping (v0.4.21). All cap-split chunks of ONE
+    # continuous presence share a `session_id`; `session_index` is their
+    # 0-based order within the session; `session_final` is True on the last
+    # emitted chunk. Lets the UI group + stitch a whole presence on demand
+    # without auto-writing a giant continuous file.
+    session_id: str = ""
+    session_index: int = 0
+    session_final: bool = False
 
 
 def _seg_start(path: Path) -> datetime | None:
@@ -459,6 +467,9 @@ def write_event_chain(
     cam_ids: list[int],
     presence_state: str = "single",
     presence_seconds: float = 0.0,
+    session_id: str = "",
+    session_index: int = 0,
+    session_final: bool = False,
 ) -> EventClip | None:
     """Materialize a stitched event spanning one or more contiguous segments.
 
@@ -623,6 +634,9 @@ def write_event_chain(
         "source_segments": source_segments,
         "presence_state": presence_state,
         "presence_seconds": round(presence_seconds, 2),
+        "session_id": session_id,
+        "session_index": session_index,
+        "session_final": session_final,
         "tracks": tracks,
     }
     try:
@@ -644,4 +658,7 @@ def write_event_chain(
         label=label,
         presence_state=presence_state,
         presence_seconds=presence_seconds,
+        session_id=session_id,
+        session_index=session_index,
+        session_final=session_final,
     )

@@ -121,13 +121,18 @@ class SegmentAnalyzer(QThread):
         self._armed = set(armed)
 
     def _write_chain(self, parts: list, presence_state: str = "single",
-                     presence_seconds: float = 0.0) -> "evt.EventClip | None":
+                     presence_seconds: float = 0.0,
+                     session_id: str = "", session_index: int = 0,
+                     session_final: bool = False) -> "evt.EventClip | None":
         try:
             return evt.write_event_chain(
                 parts, self._events_dir, self._event_cfg,
                 self._recording_dir, self._cam_ids,
                 presence_state=presence_state,
                 presence_seconds=presence_seconds,
+                session_id=session_id,
+                session_index=session_index,
+                session_final=session_final,
             )
         except Exception as e:
             name = parts[0].path.name if parts else "?"

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import date as _date, datetime, time as _time, timedelta
+from pathlib import Path
 
-from PySide6.QtCore import QDate, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QDate, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QFileDialog,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -37,15 +39,45 @@ from app.core import camera_names
 from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
 from app.core.config import Settings
-from app.core.event_library import EventRecord, event_dates, events_for_day, scan_events
+from app.core.event_library import (
+    EventRecord,
+    EventSession,
+    event_dates,
+    scan_events,
+    sessions_for_day,
+)
 from app.core.log import bus
 from app.core.playback_player import PlaybackPlayer
+from app.core.session_export import export_session
 from app.ui import theme
 from app.ui.camera_tile import VideoPanel
 from app.ui.grid_focus import GridFocus
 from app.ui.icon_button import IconButton
 from app.ui.import_clip_dialog import ImportClipDialog
 from app.ui.timeline_drawer import TimelineDrawer
+
+
+class _SessionExportWorker(QObject):
+    """Runs export_session off the UI thread (a concat of hours of clips can
+    take a while). Lives on its own QThread; reports done via `finished`."""
+
+    finished = Signal(bool, str)  # ok, out_path
+
+    def __init__(self, session: EventSession, cam_id: int, out_path) -> None:
+        super().__init__()
+        self._session = session
+        self._cam_id = cam_id
+        self._out_path = out_path
+
+    @Slot()
+    def run(self) -> None:
+        ok = False
+        try:
+            ok = export_session(self._session, self._cam_id, self._out_path)
+        except Exception as e:  # never let a bad export crash the thread
+            bus.warn("EVT", f"save-full-clip: export raised: {e!s}")
+            ok = False
+        self.finished.emit(ok, str(self._out_path))
 
 
 class PlaybackTile(QFrame):
@@ -193,7 +225,12 @@ class PlaybackView(QWidget):
         self._mode = "recordings"
         self._events: list[EventRecord] = []
         self._day_events: list[EventRecord] = []
+        self._day_sessions: list[EventSession] = []
         self._current_event: EventRecord | None = None
+        self._current_session: EventSession | None = None
+        # Background "Save full clip" export (one at a time).
+        self._export_thread: QThread | None = None
+        self._export_worker: _SessionExportWorker | None = None
         self._event_pos = 0.0  # clip-relative seconds, for stepping + label
         self._event_conf_min = 0.0  # min human-detection confidence to show (0..1)
         self._event_cam_filter: set[int] = {c.index for c in cameras}  # trigger cams to show
@@ -344,6 +381,18 @@ class PlaybackView(QWidget):
         self._events_list.setUniformItemSizes(False)
         self._events_list.currentRowChanged.connect(self._on_event_selected)
         ev.addWidget(self._events_list, 1)
+
+        # Stitch the whole selected presence into one continuous file on demand.
+        self._save_full_btn = QPushButton("SAVE FULL CLIP", self._events_section)
+        self._save_full_btn.setObjectName("SidebarAction")
+        self._save_full_btn.setToolTip(
+            "Stitch every clip of the selected presence into one continuous "
+            "video (can be large)"
+        )
+        self._save_full_btn.setEnabled(False)
+        self._save_full_btn.clicked.connect(self._on_save_full_clip)
+        ev.addWidget(self._save_full_btn)
+
         self._events_section.setVisible(False)
         v.addWidget(self._events_section, 1)
 
@@ -482,6 +531,9 @@ class PlaybackView(QWidget):
                 t.set_overlay(None)
         self._highlight_calendar_dates()
         if mode == "events":
+            self._current_session = None
+            self._current_event = None
+            self._save_full_btn.setEnabled(False)
             self.refresh_events()
             for t in self._tiles:
                 t.load_path(None)
@@ -495,45 +547,61 @@ class PlaybackView(QWidget):
         self._populate_events_list()
 
     def _populate_events_list(self) -> None:
-        # Preserve selection target: re-selecting the same folder if still there.
-        prev = self._current_event.folder if self._current_event else None
+        # One row per SESSION: the cap-split chunks of one presence collapse
+        # into a single browsable unit. Selecting a row plays the session's
+        # first member; "Save full clip" stitches them all on demand.
+        prev_sid = self._current_session.session_id if self._current_session else None
         self._events_list.blockSignals(True)
         self._events_list.clear()
-        all_day = events_for_day(self._events, self._selected_day)
-        self._day_events = [
-            e for e in all_day
-            if e.person_conf >= self._event_conf_min
-            and e.trigger_cam in self._event_cam_filter
+        all_sessions = sessions_for_day(self._events, self._selected_day)
+        # Filter on the session's member metadata (trigger cam + peak human conf
+        # of any member), mirroring the per-event filter.
+        names = camera_names.load(self._settings.env_path)
+        self._day_sessions = [
+            s for s in all_sessions
+            if s.trigger_cam in self._event_cam_filter
+            and any(m.person_conf >= self._event_conf_min for m in s.members)
         ]
-        for ev in self._day_events:
-            conf = f"  ·  {ev.person_pct}% human" if ev.peak_person else ""
+        # Keep a flat per-event view for any legacy callers / position stepping.
+        self._day_events = [m for s in self._day_sessions for m in s.members]
+        for s in self._day_sessions:
+            cam = next((c for c in self._cameras if c.index == s.trigger_cam), None)
+            cam_name = self._cam_display_name(cam, names) if cam else f"cam{s.trigger_cam}"
+            best = max((m.person_pct for m in s.members), default=0)
+            conf = f"  ·  {best}% human" if s.peak_person else ""
+            if s.count > 1:
+                span = f"{s.start_at:%H:%M:%S}–{s.end_at:%H:%M:%S}"
+                line2 = f"{cam_name} · {s.duration_label} · {s.count} clips"
+            else:
+                span = f"{s.start_at:%H:%M:%S}"
+                line2 = f"{cam_name} · {len(s.members[0].clips)} angles"
             item = QListWidgetItem()
-            item.setText(
-                f"{ev.start_at:%H:%M:%S}   {ev.pretty}{conf}\n"
-                f"cam{ev.trigger_cam} · {len(ev.clips)} angles"
-            )
-            if ev.thumb is not None:
-                item.setIcon(QIcon(str(ev.thumb)))
+            item.setText(f"{span}   {s.pretty}{conf}\n{line2}")
+            if s.thumb is not None:
+                item.setIcon(QIcon(str(s.thumb)))
             self._events_list.addItem(item)
-        shown, total = len(self._day_events), len(all_day)
-        suffix = f"{shown}/{total}" if shown != total else f"{total}"
-        self._events_heading.setText(f"EVENTS — {self._selected_day:%b %d}  ({suffix})")
+        n = len(self._day_sessions)
+        self._events_heading.setText(f"EVENTS — {self._selected_day:%b %d}  ({n})")
         self._events_list.blockSignals(False)
-        if prev is not None:
-            for row, ev in enumerate(self._day_events):
-                if ev.folder == prev:
+        if prev_sid is not None:
+            for row, s in enumerate(self._day_sessions):
+                if s.session_id == prev_sid:
                     self._events_list.setCurrentRow(row)
                     break
 
     @Slot(int)
     def _on_event_selected(self, row: int) -> None:
-        if row < 0 or row >= len(self._day_events):
+        if row < 0 or row >= len(self._day_sessions):
             return
-        ev = self._day_events[row]
-        # Re-selecting the already-current event (e.g. when the 30s refresh
+        session = self._day_sessions[row]
+        # Re-selecting the already-current session (e.g. when the 30s refresh
         # restores the highlight) must not restart playback from 0.
-        if self._current_event is not None and ev.folder == self._current_event.folder:
+        if (self._current_session is not None
+                and session.session_id == self._current_session.session_id):
             return
+        self._current_session = session
+        self._save_full_btn.setEnabled(self._export_thread is None)
+        ev = session.members[0]  # selecting a session plays its first member
         self._current_event = ev
         self._event_pos = 0.0
         # Selecting an event starts it immediately - no separate Play click.
@@ -555,6 +623,59 @@ class PlaybackView(QWidget):
         self._cursor_label.setText(
             f"{ev.start_at:%Y-%m-%d %H:%M:%S}  ·  cam{ev.trigger_cam}  ·  {ev.pretty}"
         )
+
+    @Slot()
+    def _on_save_full_clip(self) -> None:
+        session = self._current_session
+        if session is None or self._export_thread is not None:
+            return
+        names = camera_names.load(self._settings.env_path)
+        cam = next((c for c in self._cameras if c.index == session.trigger_cam), None)
+        cam_name = self._cam_display_name(cam, names) if cam else f"cam{session.trigger_cam}"
+        # Filesystem-safe default name.
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in cam_name)
+        default = f"{safe}_{session.start_at:%Y%m%d_%H%M%S}_full.mp4"
+        out, _ = QFileDialog.getSaveFileName(
+            self, "Save full clip", default, "MP4 video (*.mp4)"
+        )
+        if not out:
+            return
+        out_path = Path(out)
+
+        self._save_full_btn.setEnabled(False)
+        self._save_full_btn.setText("SAVING…")
+        bus.info(
+            "EVT",
+            f"save-full-clip: exporting {session.count} clips "
+            f"({session.duration_label}) of {cam_name} -> {out_path.name}",
+        )
+
+        thread = QThread(self)
+        worker = _SessionExportWorker(session, session.trigger_cam, out_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_export_done)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._export_thread = thread
+        self._export_worker = worker
+        thread.start()
+
+    @Slot(bool, str)
+    def _on_export_done(self, ok: bool, out_path: str) -> None:
+        self._export_thread = None
+        self._export_worker = None
+        self._save_full_btn.setText("SAVE FULL CLIP")
+        self._save_full_btn.setEnabled(self._current_session is not None)
+        if ok:
+            try:
+                size_mb = Path(out_path).stat().st_size / (1024 * 1024)
+                bus.info("EVT", f"save-full-clip: done — {out_path} ({size_mb:.1f} MB)")
+            except OSError:
+                bus.info("EVT", f"save-full-clip: done — {out_path}")
+        else:
+            bus.warn("EVT", f"save-full-clip: export failed for {out_path}")
 
     def _toggle_boxes(self) -> None:
         self._boxes_on = self._boxes_btn.isChecked()
