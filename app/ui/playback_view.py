@@ -5,7 +5,16 @@ from __future__ import annotations
 from datetime import date as _date, datetime, time as _time, timedelta
 
 from PySide6.QtCore import QDate, QSize, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QTextCharFormat
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QIcon,
+    QImage,
+    QPainter,
+    QPen,
+    QTextCharFormat,
+)
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QCheckBox,
@@ -16,12 +25,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from app.core import camera_names
 from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
 from app.core.config import Settings
@@ -184,6 +196,8 @@ class PlaybackView(QWidget):
         self._current_event: EventRecord | None = None
         self._event_pos = 0.0  # clip-relative seconds, for stepping + label
         self._event_conf_min = 0.0  # min human-detection confidence to show (0..1)
+        self._event_cam_filter: set[int] = {c.index for c in cameras}  # trigger cams to show
+        self._cam_filter_actions: dict[int, QAction] = {}
         self._boxes_on = True  # draw detection boxes over event playback
 
         root = QHBoxLayout(self)
@@ -319,6 +333,8 @@ class PlaybackView(QWidget):
             self._conf_combo.addItem(lbl, val)
         self._conf_combo.currentIndexChanged.connect(self._on_conf_filter_changed)
         fr.addWidget(self._conf_combo, 1)
+        fr.addWidget(QLabel("CAMERAS", filt_row))
+        fr.addWidget(self._build_camera_filter(filt_row), 1)
         ev.addWidget(filt_row)
 
         self._events_list = QListWidget(self._events_section)
@@ -333,6 +349,93 @@ class PlaybackView(QWidget):
 
         v.addStretch(0)
         return side
+
+    def _cam_display_name(self, cam: Camera, names: dict[int, str]) -> str:
+        return names.get(cam.index) or cam.location or cam.label
+
+    def _build_camera_filter(self, parent: QWidget) -> QToolButton:
+        """Multi-select dropdown filtering events by their trigger camera."""
+        names = camera_names.load(self._settings.env_path)
+        btn = QToolButton(parent)
+        btn.setObjectName("EventCamFilter")
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        menu = QMenu(btn)
+        menu.setStyleSheet(
+            """
+            QMenu {
+                background: #1f242e;
+                border: 1px solid #2a3040;
+                padding: 6px;
+            }
+            QMenu::item {
+                padding: 6px 14px;
+                border-radius: 4px;
+                color: #ebe7e1;
+            }
+            QMenu::item:selected {
+                background: #2a2017;
+                color: #c69561;
+            }
+            """
+        )
+
+        self._cam_filter_all = QAction("All", menu)
+        self._cam_filter_all.setCheckable(True)
+        self._cam_filter_all.setChecked(True)
+        self._cam_filter_all.toggled.connect(self._on_cam_filter_all)
+        menu.addAction(self._cam_filter_all)
+        menu.addSeparator()
+
+        for cam in self._cameras:
+            act = QAction(self._cam_display_name(cam, names), menu)
+            act.setCheckable(True)
+            act.setChecked(cam.index in self._event_cam_filter)
+            act.toggled.connect(lambda on, i=cam.index: self._on_cam_filter_toggled(i, on))
+            menu.addAction(act)
+            self._cam_filter_actions[cam.index] = act
+
+        btn.setMenu(menu)
+        self._cam_filter_btn = btn
+        self._sync_cam_filter_label()
+        return btn
+
+    def _sync_cam_filter_label(self) -> None:
+        names = camera_names.load(self._settings.env_path)
+        total = len(self._cameras)
+        n = len(self._event_cam_filter)
+        if n == total:
+            text = "All"
+        elif n == 1:
+            only = next(iter(self._event_cam_filter))
+            cam = next((c for c in self._cameras if c.index == only), None)
+            text = self._cam_display_name(cam, names) if cam else "1 cam"
+        else:
+            text = f"{n} cams"
+        self._cam_filter_btn.setText(text)
+        # Keep the "All" checkbox in sync without re-triggering its slot.
+        self._cam_filter_all.blockSignals(True)
+        self._cam_filter_all.setChecked(n == total)
+        self._cam_filter_all.blockSignals(False)
+
+    @Slot(bool)
+    def _on_cam_filter_all(self, on: bool) -> None:
+        self._event_cam_filter = {c.index for c in self._cameras} if on else set()
+        for idx, act in self._cam_filter_actions.items():
+            act.blockSignals(True)
+            act.setChecked(idx in self._event_cam_filter)
+            act.blockSignals(False)
+        self._sync_cam_filter_label()
+        self._populate_events_list()
+
+    def _on_cam_filter_toggled(self, cam_id: int, on: bool) -> None:
+        if on:
+            self._event_cam_filter.add(cam_id)
+        else:
+            self._event_cam_filter.discard(cam_id)
+        self._sync_cam_filter_label()
+        self._populate_events_list()
 
     @Slot()
     def _on_import_clip(self) -> None:
@@ -397,7 +500,11 @@ class PlaybackView(QWidget):
         self._events_list.blockSignals(True)
         self._events_list.clear()
         all_day = events_for_day(self._events, self._selected_day)
-        self._day_events = [e for e in all_day if e.person_conf >= self._event_conf_min]
+        self._day_events = [
+            e for e in all_day
+            if e.person_conf >= self._event_conf_min
+            and e.trigger_cam in self._event_cam_filter
+        ]
         for ev in self._day_events:
             conf = f"  ·  {ev.person_pct}% human" if ev.peak_person else ""
             item = QListWidgetItem()
@@ -423,6 +530,10 @@ class PlaybackView(QWidget):
         if row < 0 or row >= len(self._day_events):
             return
         ev = self._day_events[row]
+        # Re-selecting the already-current event (e.g. when the 30s refresh
+        # restores the highlight) must not restart playback from 0.
+        if self._current_event is not None and ev.folder == self._current_event.folder:
+            return
         self._current_event = ev
         self._event_pos = 0.0
         # Selecting an event starts it immediately - no separate Play click.
