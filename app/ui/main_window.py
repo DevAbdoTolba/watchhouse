@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
             settings.telegram_bot_token,
             settings.telegram_chat_id,
             min_interval_s=settings.telegram_min_interval_s,
+            notify_ongoing=settings.event_notify_ongoing,
             parent=self,
         )
 

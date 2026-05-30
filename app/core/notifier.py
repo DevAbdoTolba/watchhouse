@@ -123,11 +123,12 @@ class TelegramNotifier(QObject):
     """Dispatches event alerts to Telegram. Construct once; call notify()."""
 
     def __init__(self, token: str, chat_id: str, min_interval_s: float = 20.0,
-                 parent: QObject | None = None) -> None:
+                 notify_ongoing: bool = True, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._token = (token or "").strip()
         self._chat_id = (chat_id or "").strip()
         self._min_interval = max(0.0, min_interval_s)
+        self._notify_ongoing = notify_ongoing
         self._last_sent: dict[int, float] = {}
         self._pool = QThreadPool.globalInstance()
         self.enabled = bool(self._token and self._chat_id)
@@ -137,14 +138,25 @@ class TelegramNotifier(QObject):
             bus.info("TG", "Telegram alerts off (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env)")
 
     def notify(self, clip, cam_label: str | None = None) -> None:
-        """Queue an alert for an extracted event. Best-effort, non-blocking."""
+        """Queue an alert for an extracted event. Best-effort, non-blocking.
+
+        Debounce policy: an arrival ("started"/"single") and a departure
+        ("ended") must never be dropped, so they bypass the per-camera
+        debounce. Only the repeating "still present" pings ("ongoing") respect
+        self._min_interval - and they can be silenced entirely via config."""
         if not self.enabled:
             return
+        state = getattr(clip, "presence_state", "single")
+        if state == "ongoing" and not self._notify_ongoing:
+            return  # user opted out of the recurring still-present pings
         cam_id = getattr(clip, "cam_id", 0)
         now = time.monotonic()
-        last = self._last_sent.get(cam_id, 0.0)
-        if now - last < self._min_interval:
-            return  # debounce: too soon after the previous alert on this camera
+        if state == "ongoing":
+            last = self._last_sent.get(cam_id, 0.0)
+            if now - last < self._min_interval:
+                return  # debounce: too soon after the previous ongoing ping
+        # started / single / ended always send; record the time so a following
+        # ongoing ping is still debounced relative to the most recent send.
         self._last_sent[cam_id] = now
 
         caption = self._caption(clip, cam_label)
@@ -153,10 +165,7 @@ class TelegramNotifier(QObject):
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb))
 
     @staticmethod
-    def _caption(clip, cam_label: str | None) -> str:
-        where = cam_label or f"camera {getattr(clip, 'cam_id', '?')}"
-        when = getattr(clip, "start_at", None)
-        when_s = when.strftime("%H:%M:%S") if when is not None else ""
+    def _what(clip) -> str:
         parts: list[str] = []
         pp = getattr(clip, "peak_person", 0)
         pv = getattr(clip, "peak_vehicle", 0)
@@ -164,5 +173,26 @@ class TelegramNotifier(QObject):
             parts.append(f"{pp} person" + ("s" if pp != 1 else ""))
         if pv:
             parts.append(f"{pv} vehicle" + ("s" if pv != 1 else ""))
-        what = ", ".join(parts) if parts else "activity"
-        return f"\U0001F6A8 Watchhouse: {what} at {where} · {when_s}"
+        return ", ".join(parts) if parts else "activity"
+
+    @staticmethod
+    def _mins(seconds: float) -> str:
+        """Human duration for captions: seconds under a minute, else rounded m."""
+        s = max(0.0, float(seconds))
+        if s < 60.0:
+            return f"{int(round(s))}s"
+        return f"{int(round(s / 60.0))}m"
+
+    @classmethod
+    def _caption(cls, clip, cam_label: str | None) -> str:
+        where = cam_label or f"camera {getattr(clip, 'cam_id', '?')}"
+        when = getattr(clip, "start_at", None)
+        when_s = when.strftime("%H:%M:%S") if when is not None else ""
+        state = getattr(clip, "presence_state", "single")
+        secs = getattr(clip, "presence_seconds", 0.0)
+        if state == "ongoing":
+            return f"⏱ {where}: still present (~{cls._mins(secs)})  {when_s}"
+        if state == "ended":
+            return f"✅ {where}: cleared after {cls._mins(secs)}  {when_s}"
+        # started / single -> a normal arrival alert.
+        return f"\U0001F6A8 {where}: {cls._what(clip)} detected  {when_s}"

@@ -91,6 +91,9 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     telegram_min_interval_s: float
+    # Presence-aware notifications (v0.4.20): send the recurring "still present"
+    # pings. Off keeps only arrival + cleared. On by default (user wants pings).
+    event_notify_ongoing: bool
 
     @classmethod
     def load(cls) -> "Settings":
@@ -140,6 +143,7 @@ class Settings:
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
             telegram_min_interval_s=float(os.environ.get("TELEGRAM_MIN_INTERVAL_SECONDS", "20")),
+            event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
         )
         bus.info(
             "CFG",
@@ -171,7 +175,7 @@ class Settings:
         bus.info(
             "CFG",
             f"telegram: {'configured' if (s.telegram_bot_token and s.telegram_chat_id) else 'not set'} "
-            f"(min_interval={s.telegram_min_interval_s:g}s)",
+            f"(min_interval={s.telegram_min_interval_s:g}s notify_ongoing={s.event_notify_ongoing})",
         )
         return s
 

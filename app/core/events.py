@@ -111,6 +111,15 @@ class EventClip:
     peak_person_conf: float
     peak_vehicle_conf: float
     label: str
+    # Presence lifecycle for notifications (v0.4.20). The stitcher tags each
+    # emitted clip so the notifier can say arrived vs still-present vs left:
+    #   "started" first clip of a new presence on a camera
+    #   "ongoing" a cap-split continuation while the presence persists
+    #   "ended"   the final clip of a presence (chain finalized for good)
+    #   "single"  a short standalone event that started and ended in one emit
+    # `presence_seconds` is the total wall span of the whole presence so far.
+    presence_state: str = "single"
+    presence_seconds: float = 0.0
 
 
 def _seg_start(path: Path) -> datetime | None:
@@ -448,6 +457,8 @@ def write_event_chain(
     cfg: EventConfig,
     recording_dir: Path,
     cam_ids: list[int],
+    presence_state: str = "single",
+    presence_seconds: float = 0.0,
 ) -> EventClip | None:
     """Materialize a stitched event spanning one or more contiguous segments.
 
@@ -610,6 +621,8 @@ def write_event_chain(
         "cams": cams_captured,
         "segments": len(parts),
         "source_segments": source_segments,
+        "presence_state": presence_state,
+        "presence_seconds": round(presence_seconds, 2),
         "tracks": tracks,
     }
     try:
@@ -629,4 +642,6 @@ def write_event_chain(
         peak_person_conf=merged.peak_person_conf,
         peak_vehicle_conf=merged.peak_vehicle_conf,
         label=label,
+        presence_state=presence_state,
+        presence_seconds=presence_seconds,
     )

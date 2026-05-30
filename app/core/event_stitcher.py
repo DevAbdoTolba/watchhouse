@@ -17,6 +17,13 @@ unit-testable without Qt or a real detector.
 Decisions are driven by wall-clock, never arrival order: segments can be
 re-scanned, arrive late, or out of order, and a real coverage gap (recorder
 restart, dropped file) must break the chain. State is keyed by camera index.
+
+v0.4.20 layers a presence lifecycle on top: a long continuous presence is
+force-split into several chains by the duration cap, but it is ONE presence to
+the user - it started once, may ping several times, and ends once. The stitcher
+tracks that lifecycle per camera (independent of the per-chain bookkeeping) and
+tags each emitted clip started / ongoing / ended / single so the notifier can
+say arrived vs still-present vs left.
 """
 
 from __future__ import annotations
@@ -79,9 +86,27 @@ class _Chain:
         return (self.end_wall - self.start_wall).total_seconds()
 
 
-# Writer signature: (parts, ) -> EventClip | None. The analyzer binds the
-# events_dir / cfg / recording_dir / cam_ids; the stitcher only supplies parts.
-Writer = Callable[[list], object]
+@dataclass
+class _Presence:
+    """A continuous presence on one camera, surviving cap-split re-seeds.
+
+    `start_wall` is the wall-clock the presence first began; `last_end_wall` is
+    the wall-clock of the most recent activity seen for it. `emitted` counts how
+    many clips this presence has already produced, so the first one can be
+    tagged "started" and a final-without-any-prior-emit one "single"."""
+
+    start_wall: datetime
+    last_end_wall: datetime
+    emitted: int = 0
+
+    def span_s(self) -> float:
+        return max(0.0, (self.last_end_wall - self.start_wall).total_seconds())
+
+
+# Writer signature: (parts, presence_state, presence_seconds) -> EventClip|None.
+# The analyzer binds the events_dir / cfg / recording_dir / cam_ids; the stitcher
+# supplies the parts plus the presence lifecycle tag for that clip.
+Writer = Callable[[list, str, float], object]
 Emit = Callable[[object], None]
 
 
@@ -111,6 +136,9 @@ class EventStitcher:
         self._contig_tol = cfg.merge_gap_s + 3.0 + max(0.0, contig_tolerance_s)
         self._now = now_fn
         self._held: dict[int, _Chain] = {}
+        # Per-camera presence lifecycle, tracked across cap-split re-seeds so a
+        # long continuous presence is one started -> ongoing... -> ended story.
+        self._presence: dict[int, _Presence] = {}
 
     # -- public API ---------------------------------------------------------
 
@@ -130,7 +158,7 @@ class EventStitcher:
                 clips += self._continue_chain(held, scan)
                 return clips
             # Coverage gap or no leading presence -> the held event is done.
-            clips += self._flush_chain(cam)
+            clips += self._flush_chain(cam, "ended")
 
         # 3) No (longer any) held chain: turn this scan's events into output,
         #    holding the trailing one if it is still open at the segment edge.
@@ -142,7 +170,7 @@ class EventStitcher:
         the recorder shuts down, so the final tail still becomes an event."""
         clips: list = []
         for cam in list(self._held.keys()):
-            clips += self._flush_chain(cam)
+            clips += self._flush_chain(cam, "ended")
         return clips
 
     # -- internals ----------------------------------------------------------
@@ -190,11 +218,24 @@ class EventStitcher:
             return None
         return min(scan.events, key=lambda e: e.t_start)
 
+    def _begin_presence(self, cam: int, start: datetime, end: datetime) -> None:
+        """Open a new presence for a camera if none is active; otherwise extend
+        the existing one's tail. The start_wall of an open presence is never
+        moved (it survives cap-split re-seeds)."""
+        pres = self._presence.get(cam)
+        if pres is None:
+            self._presence[cam] = _Presence(start_wall=start, last_end_wall=end)
+        else:
+            pres.last_end_wall = max(pres.last_end_wall, end)
+
     def _continue_chain(self, held: _Chain, scan: SegmentScan) -> list:
         clips: list = []
         lead = self._leading_event(scan)
         held.parts.append(self._new_part(scan, lead))
         held.deadline = self._deadline_for(scan)
+
+        # The presence's tail advances as the chain grows, even before a flush.
+        self._begin_presence(scan.cam_id, held.start_wall, held.end_wall)
 
         still_open = self._ends_open(scan, lead) and self._leads_to_edge(scan, lead)
         capped = held.total_span_s() >= self._max_duration_s
@@ -207,13 +248,24 @@ class EventStitcher:
             # the capped chain, then if it is still active at the segment edge
             # re-seed a fresh chain from the same trailing interval so the next
             # contiguous segment continues the *new* event, not the closed one.
-            clips += self._flush_chain(scan.cam_id)
+            # The presence itself is NOT over while still_open, so that flush is
+            # "ongoing"; if the cap landed exactly at presence end (no re-seed),
+            # this is the final clip -> "ended".
+            state = "ongoing" if still_open else "ended"
+            clips += self._flush_chain(scan.cam_id, state)
             clips += self._emit_singletons(scan, rest)
             if still_open:
+                # Re-seed the chain AND keep the presence alive across the split.
                 self._held[scan.cam_id] = _Chain(
                     cam_id=scan.cam_id,
                     parts=[self._new_part(scan, lead)],
                     deadline=self._deadline_for(scan),
+                )
+                lw = scan.seg_start + timedelta(seconds=lead.t_end)
+                self._begin_presence(
+                    scan.cam_id,
+                    scan.seg_start + timedelta(seconds=lead.t_start),
+                    lw,
                 )
             return clips
 
@@ -224,7 +276,7 @@ class EventStitcher:
 
         # Presence ended inside this segment: finalize the chain. Any trailing
         # independent interval that itself ends open re-opens a fresh hold.
-        clips += self._flush_chain(scan.cam_id)
+        clips += self._flush_chain(scan.cam_id, "ended")
         clips += self._ingest_events(scan, rest, hold_trailing=True)
         return clips
 
@@ -259,7 +311,10 @@ class EventStitcher:
         for ev in evs:
             if ev is trailing:
                 continue
-            clip = self._writer([self._new_part(scan, ev)])
+            # A non-held standalone interval starts and ends within this emit:
+            # a normal short alert. Its span is just the interval length.
+            span = max(0.0, ev.t_end - ev.t_start)
+            clip = self._writer([self._new_part(scan, ev)], "single", span)
             if clip is not None:
                 self._emit(clip)
                 clips.append(clip)
@@ -270,13 +325,48 @@ class EventStitcher:
                 parts=[self._new_part(scan, trailing)],
                 deadline=self._deadline_for(scan),
             )
+            # A held trailing interval opens a NEW presence on this camera.
+            ts = scan.seg_start + timedelta(seconds=trailing.t_start)
+            te = scan.seg_start + timedelta(seconds=trailing.t_end)
+            self._begin_presence(scan.cam_id, ts, te)
         return clips
 
-    def _flush_chain(self, cam: int) -> list:
+    def _flush_chain(self, cam: int, state: str) -> list:
+        """Finalize a held chain. `state` is "ongoing" (cap-split; the presence
+        continues and a fresh chain is re-seeded) or "ended" (presence over).
+
+        The first clip a presence ever emits is re-tagged "started" so the user
+        gets an arrival alert; a presence that both starts and ends in this one
+        flush (never pinged before) is "single". The reported `presence_seconds`
+        is always the FULL presence span so far, not just this chain's length."""
         held = self._held.pop(cam, None)
         if held is None:
             return []
-        clip = self._writer(list(held.parts))
+
+        pres = self._presence.get(cam)
+        if pres is not None:
+            pres.last_end_wall = max(pres.last_end_wall, held.end_wall)
+            span = pres.span_s()
+            first_emit = pres.emitted == 0
+        else:
+            span = held.total_span_s()
+            first_emit = True
+
+        if state == "ended" and first_emit:
+            out_state = "single"   # started and ended without any mid-presence ping
+        elif first_emit:
+            out_state = "started"  # first ping of a presence that keeps going
+        else:
+            out_state = state      # "ongoing" continuation or final "ended"
+
+        clip = self._writer(list(held.parts), out_state, span)
+
+        if pres is not None:
+            if state == "ended":
+                self._presence.pop(cam, None)
+            else:
+                pres.emitted += 1
+
         if clip is None:
             return []
         self._emit(clip)
@@ -289,5 +379,5 @@ class EventStitcher:
         clips: list = []
         for cam, held in list(self._held.items()):
             if now >= held.deadline:
-                clips += self._flush_chain(cam)
+                clips += self._flush_chain(cam, "ended")
         return clips
