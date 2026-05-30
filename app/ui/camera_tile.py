@@ -170,7 +170,7 @@ class EditableLabel(QWidget):
         self._edit.setMaxLength(40)
         self._edit.setStyleSheet(
             "QLineEdit#TileNameEdit { background:#161a22; color:#ebe7e1;"
-            " border:1px solid #c69561; border-radius:3px; padding:0 4px; }"
+            " border:1px solid #c69561; border-radius:3px; padding:1px 6px; }"
         )
 
         self._stack.addWidget(self._label)
@@ -179,6 +179,14 @@ class EditableLabel(QWidget):
         self._label.double_clicked.connect(self._start)
         self._edit.returnPressed.connect(lambda: self._finish(commit=True))
         self._edit.installEventFilter(self)
+
+    def _relayout(self) -> None:
+        """Force the header to re-lay-out now, so a width change applies
+        immediately instead of one event-loop tick later (which would briefly
+        show a clipped field)."""
+        parent = self.parentWidget()
+        if parent is not None and parent.layout() is not None:
+            parent.layout().activate()
 
     def set_display(self, text: str) -> None:
         self._label.setText(text)
