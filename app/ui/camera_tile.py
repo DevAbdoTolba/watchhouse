@@ -174,6 +174,7 @@ class CameraTile(QFrame):
 
         location = QLabel(camera.location, header)
         location.setObjectName("TileLocation")
+        self._location_label = location
         # Don't let the location text dictate the column width; if the tile
         # narrows, the label squishes (and clips) before the column stretches.
         location.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -288,6 +289,10 @@ class CameraTile(QFrame):
         else:
             # Worker not alive; just rebuild against the new settings on next start.
             self._build_worker()
+
+    def set_display_name(self, name: str) -> None:
+        """Update the header's descriptive name (custom rename or default)."""
+        self._location_label.setText(name or self._camera.location)
 
     # Internal
 

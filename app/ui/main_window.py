@@ -6,6 +6,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -26,10 +27,12 @@ from app.core.ip_cache import load as load_ip_cache, record_hit as record_ip_hit
 from app.core.log import bus
 from app.core.playback_probe import PlaybackProbeWorker
 from app.core.probe import ProbeWorker
+from app.core import camera_names
 from app.core.analyzer import SegmentAnalyzer
 from app.core.events import EventConfig
 from app.core.notifier import TelegramNotifier
 from app.core.recorder import RecorderSupervisor
+from app.ui.camera_names_dialog import CameraNamesDialog
 from app.ui.camera_tile import CameraTile
 from app.ui.grid_focus import GridFocus
 from app.ui.console_panel import ConsolePanel
@@ -56,16 +59,12 @@ class MainWindow(QMainWindow):
         self._armed_cameras: set[int] = {
             c.index for c in self._cameras if c.index in settings.detection_cameras
         }
-        # Human label per camera for alert captions - prefer the descriptive
-        # location ("Entry threshold (interior)") over the terse tile title
-        # ("CAM 02"). Defensive getattr so this never raises.
+        # User-editable display names (persisted next to .env), shown in the
+        # tile header and used as the Telegram caption label. A blank/unset
+        # name falls back to the camera's built-in location.
+        self._camera_names: dict[int, str] = camera_names.load(settings.env_path)
         self._cam_labels: dict[int, str] = {
-            c.index: (
-                getattr(c, "location", None)
-                or getattr(c, "label", None)
-                or f"camera {c.index}"
-            )
-            for c in self._cameras
+            c.index: self._effective_cam_name(c) for c in self._cameras
         }
         # Off-device push alerts; no-op unless TELEGRAM_* is configured in .env.
         self._notifier = TelegramNotifier(
@@ -189,12 +188,16 @@ class MainWindow(QMainWindow):
         self._act_discover = system_menu.addAction("Discover DVR on LAN")
         self._act_pbprobe  = system_menu.addAction("Probe Playback Protocols")
         system_menu.addSeparator()
+        self._act_rename   = system_menu.addAction("Rename Cameras…")
+        self._act_rename.setToolTip("Set a friendly name per camera (alerts + tiles)")
+        system_menu.addSeparator()
         act_wipe = system_menu.addAction("Wipe Data…")
         act_wipe.setToolTip("Delete recordings, caches and stored data (PIN-gated)")
 
         self._act_probe.triggered.connect(self._run_probe)
         self._act_discover.triggered.connect(self._run_discovery)
         self._act_pbprobe.triggered.connect(self._run_pbprobe)
+        self._act_rename.triggered.connect(self._open_rename_dialog)
         act_wipe.triggered.connect(self._open_wipe_dialog)
 
         self._system_btn.setMenu(system_menu)
@@ -214,6 +217,19 @@ class MainWindow(QMainWindow):
         dlg = WipeDialog(self._settings, expected_pin="123", parent=self)
         dlg.exec()
 
+    def _open_rename_dialog(self) -> None:
+        dlg = CameraNamesDialog(self._cameras, dict(self._camera_names), parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._camera_names = dlg.names()
+        camera_names.save(self._settings.env_path, self._camera_names)
+        self._cam_labels = {
+            c.index: self._effective_cam_name(c) for c in self._cameras
+        }
+        for tile, cam in zip(self._tiles, self._cameras):
+            tile.set_display_name(self._cam_labels[cam.index])
+        bus.info("APP", "camera names updated")
+
     def _set_mode(self, mode: str) -> None:
         if mode == "live":
             self._mode_live_btn.setChecked(True)
@@ -228,6 +244,15 @@ class MainWindow(QMainWindow):
             self._reconnect_btn.setVisible(False)
             self._playback_view.refresh_library()
             bus.info("APP", "switched to PLAYBACK mode")
+
+    def _effective_cam_name(self, cam) -> str:
+        """Custom name if set, else the camera's built-in location, else label."""
+        return (
+            self._camera_names.get(cam.index)
+            or getattr(cam, "location", None)
+            or getattr(cam, "label", None)
+            or f"camera {cam.index}"
+        )
 
     def _build_grid(self, cameras, settings: Settings) -> tuple[QWidget, list[CameraTile]]:
         wrap = QWidget(self)
@@ -257,6 +282,8 @@ class MainWindow(QMainWindow):
         )
         for tile in tiles:
             tile.double_clicked.connect(self._grid_focus.handle_double_click)
+        for tile, cam in zip(tiles, cameras):
+            tile.set_display_name(self._cam_labels[cam.index])
         return wrap, tiles
 
     def _build_status_bar(self, settings: Settings) -> QWidget:
