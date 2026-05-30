@@ -252,6 +252,12 @@ class PlaybackView(QWidget):
         self._library: dict[int, list[Clip]] = {}
         self._selected_cams: set[int] = {c.index for c in cameras}
         self._selected_day: _date = datetime.now().date()
+        # "Follow latest" keeps the Events list pinned to the newest day that
+        # has events so live detections appear without the user clicking the
+        # calendar. Set False once the user deliberately browses an older day
+        # (so we never yank them off history), back True when they return to
+        # the newest day. True at startup. See _on_date_changed / _on_events_scanned.
+        self._follow_latest_day: bool = True
         self._cursor: datetime = datetime.combine(self._selected_day, _time(0, 0))
         self._is_playing = False
         self._speed = 1.0
@@ -635,11 +641,52 @@ class PlaybackView(QWidget):
         self._scan_worker = None
         self._events = events
         self._all_sessions = sessions
+        # Day-rollover safety: while following the latest day, advance the
+        # selection to the newest day that actually has events (e.g. a brand
+        # new event after midnight lands under tomorrow's folder). Skipped when
+        # the user is browsing history, so we never interrupt them.
+        self._maybe_follow_latest_day()
         self._highlight_calendar_dates()
         self._apply_event_filters()
         if self._scan_rescan_pending:
             self._scan_rescan_pending = False
             self.refresh_events()
+
+    def _maybe_follow_latest_day(self) -> None:
+        """If in follow-latest mode and the scan revealed events on a day newer
+        than the current selection, move the selection (and the calendar) to
+        that newest day so live detections always surface. No-op when browsing
+        history (`_follow_latest_day` is False)."""
+        if not self._follow_latest_day:
+            return
+        days = event_dates(self._events)
+        if not days:
+            return
+        newest = max(days)
+        if newest > self._selected_day:
+            self._set_selected_day(newest)
+
+    def _set_selected_day(self, day: _date) -> None:
+        """Point the selection + calendar at `day` without re-entering
+        `_on_date_changed` (which would clobber the follow-latest decision)."""
+        self._selected_day = day
+        self._timeline.set_day(day)
+        self._calendar.blockSignals(True)
+        self._calendar.setSelectedDate(QDate(day.year, day.month, day.day))
+        self._calendar.blockSignals(False)
+
+    def note_new_event(self, when: datetime | None = None) -> None:
+        """Fast path: a new event was just extracted. Trigger an immediate
+        (threaded) rescan so it appears within ~1s instead of waiting on the
+        30s timer, and — when following the latest day — jump the selection to
+        the new event's day so a post-midnight event is visible without a
+        restart. Called best-effort from MainWindow._on_event_extracted."""
+        if (when is not None and self._follow_latest_day
+                and when.date() > self._selected_day):
+            self._set_selected_day(when.date())
+            self._highlight_calendar_dates()
+            self._apply_event_filters()
+        self.refresh_events()
 
     def _apply_event_filters(self) -> None:
         """Re-filter the in-memory session list (day + camera + confidence) and
@@ -965,6 +1012,11 @@ class PlaybackView(QWidget):
         qd = self._calendar.selectedDate()
         self._selected_day = _date(qd.year(), qd.month(), qd.day())
         self._timeline.set_day(self._selected_day)
+        # Resume following the latest day only if the user landed on the newest
+        # day that has events (or there are none yet); picking an older day means
+        # they chose to browse history, so stop auto-advancing on them.
+        days = event_dates(self._events)
+        self._follow_latest_day = (not days) or (self._selected_day >= max(days))
         if self._mode == "events":
             self._apply_event_filters()
             return

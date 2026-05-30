@@ -514,6 +514,13 @@ class MainWindow(QMainWindow):
             f"{clip.label}  ({cams})  -> {clip.folder}",
         )
         self._notifier.notify(clip, self._cam_labels.get(clip.cam_id))
+        # Immediately surface the new event in the playback Events gallery
+        # (fast path past the 30s timer; also handles day rollover). Best-effort
+        # so a refresh hiccup can never break the notification above.
+        try:
+            self._playback_view.note_new_event(getattr(clip, "start_at", None))
+        except Exception as e:  # pragma: no cover - defensive
+            bus.warn("EVT", f"events-list live refresh failed: {e!s}")
 
     def _on_ai_totals(self, person_segments: int, vehicle_segments: int) -> None:
         self._status_ai.setText(self._ai_status_text(person_segments, vehicle_segments))
