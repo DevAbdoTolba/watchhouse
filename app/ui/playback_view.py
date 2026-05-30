@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from datetime import date as _date, datetime, time as _time, timedelta
 
-from PySide6.QtCore import QDate, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QTextCharFormat
+from PySide6.QtCore import QDate, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QCheckBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -22,10 +25,12 @@ from PySide6.QtWidgets import (
 from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
 from app.core.config import Settings
+from app.core.event_library import EventRecord, event_dates, events_for_day, scan_events
 from app.core.log import bus
 from app.core.playback_player import PlaybackPlayer
 from app.ui import theme
 from app.ui.camera_tile import VideoPanel
+from app.ui.grid_focus import GridFocus
 from app.ui.icon_button import IconButton
 from app.ui.import_clip_dialog import ImportClipDialog
 from app.ui.timeline_drawer import TimelineDrawer
@@ -33,6 +38,8 @@ from app.ui.timeline_drawer import TimelineDrawer
 
 class PlaybackTile(QFrame):
     """Header + VideoPanel + own PlaybackPlayer for one camera in playback mode."""
+
+    double_clicked = Signal(int, bool)  # camera index, shift_held
 
     def __init__(self, camera: Camera, parent=None) -> None:
         super().__init__(parent)
@@ -60,8 +67,14 @@ class PlaybackTile(QFrame):
         self._sub.setObjectName("TileLocation")
         self._sub.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
+        # Shown only on the camera that triggered the currently-loaded event.
+        self._badge = QLabel("◉ DETECTED", header)
+        self._badge.setObjectName("TileDetected")
+        self._badge.setVisible(False)
+
         hl.addWidget(self._name)
         hl.addWidget(self._sub, 1)
+        hl.addWidget(self._badge)
 
         self._video = VideoPanel(self)
         self._video.set_message("No clip selected")
@@ -94,10 +107,45 @@ class PlaybackTile(QFrame):
         else:
             self._player.seek_seconds(offset)
 
+    def load_path(self, path, sublabel: str = "") -> None:
+        """Load a specific file at offset 0 (used by the Events view, where
+        each tile plays one camera's clip of the selected event)."""
+        self._current_clip = None
+        if path is None:
+            self._player.load(None)
+            self._video.set_message("No clip for this camera")
+            self._sub.setText("no clip")
+            return
+        self._sub.setText(sublabel or path.name)
+        self._player.load(path, start_offset_s=0.0)
+
     def play(self) -> None: self._player.play()
     def pause(self) -> None: self._player.pause()
     def toggle(self) -> None: self._player.toggle()
     def set_speed(self, s: float) -> None: self._player.set_speed(s)
+    def seek(self, seconds: float) -> None: self._player.seek_seconds(max(0.0, seconds))
+    def set_overlay(self, track) -> None: self._player.set_overlay(track)
+    def set_overlay_enabled(self, on: bool) -> None: self._player.set_overlay_enabled(on)
+
+    def set_triggered(self, on: bool) -> None:
+        """Mark this tile as the camera that detected the loaded event."""
+        self._badge.setVisible(on)
+        self.setProperty("triggered", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_focus_selected(self, on: bool) -> None:
+        self.setProperty("selected", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt)
+        event.accept()  # own the press so the double-click is delivered here
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt)
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        self.double_clicked.emit(self._camera.index, shift)
+        event.accept()
 
     @Slot(str)
     def _on_state(self, state: str) -> None:
@@ -129,6 +177,14 @@ class PlaybackView(QWidget):
         self._is_playing = False
         self._speed = 1.0
         self._step_seconds = 5
+        # Events sub-mode: "recordings" (timeline scrubbing) | "events" (gallery)
+        self._mode = "recordings"
+        self._events: list[EventRecord] = []
+        self._day_events: list[EventRecord] = []
+        self._current_event: EventRecord | None = None
+        self._event_pos = 0.0  # clip-relative seconds, for stepping + label
+        self._event_conf_min = 0.0  # min human-detection confidence to show (0..1)
+        self._boxes_on = True  # draw detection boxes over event playback
 
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -157,9 +213,9 @@ class PlaybackView(QWidget):
         right_wrap.setLayout(right)
         root.addWidget(right_wrap, 1)
 
-        # Refresh library every 30s so newly recorded clips appear
+        # Refresh every 30s so newly recorded clips / events appear
         self._refresh_timer = QTimer(self)
-        self._refresh_timer.timeout.connect(self.refresh_library)
+        self._refresh_timer.timeout.connect(self._periodic_refresh)
         self._refresh_timer.start(30_000)
 
         self.refresh_library()
@@ -176,6 +232,24 @@ class PlaybackView(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(14)
 
+        # Mode toggle: scrub recordings vs. browse detected events.
+        mode_row = QWidget(side)
+        mr = QHBoxLayout(mode_row)
+        mr.setContentsMargins(0, 0, 0, 0)
+        mr.setSpacing(0)
+        self._mode_btns: dict[str, QPushButton] = {}
+        for key, lbl in (("recordings", "RECORDINGS"), ("events", "EVENTS")):
+            b = QPushButton(lbl, mode_row)
+            b.setObjectName("ModeToggle")
+            b.setCheckable(True)
+            b.setChecked(key == self._mode)
+            b.setFixedHeight(28)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _c, k=key: self._set_mode(k))
+            self._mode_btns[key] = b
+            mr.addWidget(b)
+        v.addWidget(mode_row)
+
         title = QLabel("DATE", side)
         title.setObjectName("SidebarHeading")
         v.addWidget(title)
@@ -190,33 +264,74 @@ class PlaybackView(QWidget):
         self._calendar.selectionChanged.connect(self._on_date_changed)
         v.addWidget(self._calendar)
 
-        title2 = QLabel("CAMERAS", side)
+        # --- Recordings section (cameras + import) ---
+        self._rec_section = QWidget(side)
+        rv = QVBoxLayout(self._rec_section)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(14)
+
+        title2 = QLabel("CAMERAS", self._rec_section)
         title2.setObjectName("SidebarHeading")
-        v.addWidget(title2)
+        rv.addWidget(title2)
 
         self._cam_checkboxes: dict[int, QCheckBox] = {}
         for cam in self._cameras:
-            cb = QCheckBox(cam.label, side)
+            cb = QCheckBox(cam.label, self._rec_section)
             cb.setChecked(True)
             cb.toggled.connect(lambda checked, i=cam.index: self._on_cam_toggled(i, checked))
             self._cam_checkboxes[cam.index] = cb
-            v.addWidget(cb)
+            rv.addWidget(cb)
 
-        v.addSpacing(8)
+        rv.addSpacing(8)
 
-        title3 = QLabel("LIBRARY", side)
+        title3 = QLabel("LIBRARY", self._rec_section)
         title3.setObjectName("SidebarHeading")
-        v.addWidget(title3)
+        rv.addWidget(title3)
 
-        self._import_btn = QPushButton("IMPORT CLIP", side)
+        self._import_btn = QPushButton("IMPORT CLIP", self._rec_section)
         self._import_btn.setObjectName("SidebarAction")
         self._import_btn.setToolTip(
             "Add a manually-exported DVR video to the playback library"
         )
         self._import_btn.clicked.connect(self._on_import_clip)
-        v.addWidget(self._import_btn)
+        rv.addWidget(self._import_btn)
+        v.addWidget(self._rec_section)
 
-        v.addStretch(1)
+        # --- Events section (gallery of detected events) ---
+        self._events_section = QWidget(side)
+        ev = QVBoxLayout(self._events_section)
+        ev.setContentsMargins(0, 0, 0, 0)
+        ev.setSpacing(8)
+
+        self._events_heading = QLabel("EVENTS", self._events_section)
+        self._events_heading.setObjectName("SidebarHeading")
+        ev.addWidget(self._events_heading)
+
+        filt_row = QWidget(self._events_section)
+        fr = QHBoxLayout(filt_row)
+        fr.setContentsMargins(0, 0, 0, 0)
+        fr.setSpacing(6)
+        fr.addWidget(QLabel("MIN HUMAN", filt_row))
+        self._conf_combo = QComboBox(filt_row)
+        self._conf_combo.setObjectName("EventConfFilter")
+        for lbl, val in (("Any", 0.0), ("40%", 0.40), ("60%", 0.60),
+                         ("75%", 0.75), ("90%", 0.90)):
+            self._conf_combo.addItem(lbl, val)
+        self._conf_combo.currentIndexChanged.connect(self._on_conf_filter_changed)
+        fr.addWidget(self._conf_combo, 1)
+        ev.addWidget(filt_row)
+
+        self._events_list = QListWidget(self._events_section)
+        self._events_list.setObjectName("EventsList")
+        self._events_list.setIconSize(QSize(112, 63))
+        self._events_list.setSpacing(3)
+        self._events_list.setUniformItemSizes(False)
+        self._events_list.currentRowChanged.connect(self._on_event_selected)
+        ev.addWidget(self._events_list, 1)
+        self._events_section.setVisible(False)
+        v.addWidget(self._events_section, 1)
+
+        v.addStretch(0)
         return side
 
     @Slot()
@@ -241,6 +356,114 @@ class PlaybackView(QWidget):
         self._cursor = when + timedelta(seconds=2)
         self._load_all_at_cursor()
 
+    # --- Events mode ---
+
+    def _set_mode(self, mode: str) -> None:
+        if mode not in ("recordings", "events"):
+            return
+        self._mode = mode
+        for key, btn in self._mode_btns.items():
+            btn.setChecked(key == mode)
+        self._rec_section.setVisible(mode == "recordings")
+        self._events_section.setVisible(mode == "events")
+        self._timeline.setVisible(mode == "recordings")
+        # Stepping is finer inside short event clips.
+        self._set_step(1 if mode == "events" else 5)
+        self._is_playing = False
+        self._play_btn.set_kind(IconButton.KIND_PLAY)
+        for t in self._tiles:
+            t.pause()
+            if mode == "recordings":
+                t.set_triggered(False)
+                t.set_overlay_enabled(False)
+                t.set_overlay(None)
+        self._highlight_calendar_dates()
+        if mode == "events":
+            self.refresh_events()
+            for t in self._tiles:
+                t.load_path(None)
+            self._cursor_label.setText("Select an event")
+        else:
+            self._load_all_at_cursor()
+
+    def refresh_events(self) -> None:
+        self._events = scan_events(self._settings.events_dir)
+        self._highlight_calendar_dates()
+        self._populate_events_list()
+
+    def _populate_events_list(self) -> None:
+        # Preserve selection target: re-selecting the same folder if still there.
+        prev = self._current_event.folder if self._current_event else None
+        self._events_list.blockSignals(True)
+        self._events_list.clear()
+        all_day = events_for_day(self._events, self._selected_day)
+        self._day_events = [e for e in all_day if e.person_conf >= self._event_conf_min]
+        for ev in self._day_events:
+            conf = f"  ·  {ev.person_pct}% human" if ev.peak_person else ""
+            item = QListWidgetItem()
+            item.setText(
+                f"{ev.start_at:%H:%M:%S}   {ev.pretty}{conf}\n"
+                f"cam{ev.trigger_cam} · {len(ev.clips)} angles"
+            )
+            if ev.thumb is not None:
+                item.setIcon(QIcon(str(ev.thumb)))
+            self._events_list.addItem(item)
+        shown, total = len(self._day_events), len(all_day)
+        suffix = f"{shown}/{total}" if shown != total else f"{total}"
+        self._events_heading.setText(f"EVENTS — {self._selected_day:%b %d}  ({suffix})")
+        self._events_list.blockSignals(False)
+        if prev is not None:
+            for row, ev in enumerate(self._day_events):
+                if ev.folder == prev:
+                    self._events_list.setCurrentRow(row)
+                    break
+
+    @Slot(int)
+    def _on_event_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self._day_events):
+            return
+        ev = self._day_events[row]
+        self._current_event = ev
+        self._event_pos = 0.0
+        # Selecting an event starts it immediately - no separate Play click.
+        self._is_playing = True
+        self._play_btn.set_kind(IconButton.KIND_PAUSE)
+        for tile in self._tiles:
+            idx = tile._camera.index
+            clip = ev.clips.get(idx)
+            is_trigger = idx == ev.trigger_cam
+            tile.set_triggered(is_trigger)
+            # Box overlay only on the camera that was analysed (the trigger).
+            tile.set_overlay(ev.tracks if is_trigger else None)
+            tile.set_overlay_enabled(self._boxes_on and is_trigger and bool(ev.tracks))
+            tile.load_path(clip, sublabel=(clip.name if clip else ""))
+            if clip is not None:
+                tile.play()
+            else:
+                tile.pause()
+        self._cursor_label.setText(
+            f"{ev.start_at:%Y-%m-%d %H:%M:%S}  ·  cam{ev.trigger_cam}  ·  {ev.pretty}"
+        )
+
+    def _toggle_boxes(self) -> None:
+        self._boxes_on = self._boxes_btn.isChecked()
+        ev = self._current_event
+        for tile in self._tiles:
+            is_trigger = ev is not None and tile._camera.index == ev.trigger_cam
+            tile.set_overlay_enabled(
+                self._boxes_on and is_trigger and ev is not None and bool(ev.tracks)
+            )
+
+    @Slot(int)
+    def _on_conf_filter_changed(self, _index: int) -> None:
+        self._event_conf_min = float(self._conf_combo.currentData() or 0.0)
+        self._populate_events_list()
+
+    def _periodic_refresh(self) -> None:
+        self.refresh_library()  # keep recordings/timeline current regardless
+        if self._mode == "events":
+            self.refresh_events()
+
     def _build_grid(self) -> tuple[QWidget, list[PlaybackTile]]:
         wrap = QWidget(self)
         wrap.setObjectName("Grid")
@@ -258,6 +481,15 @@ class PlaybackView(QWidget):
             tiles.append(t)
             row, col = divmod(i, 2)
             g.addWidget(t, row, col)
+
+        self._grid_focus = GridFocus(
+            g, tiles,
+            index_of=lambda t: t._camera.index,
+            set_selected=lambda t, on: t.set_focus_selected(on),
+            parent=self,
+        )
+        for t in tiles:
+            t.double_clicked.connect(self._grid_focus.handle_double_click)
         return wrap, tiles
 
     def _build_transport(self) -> QWidget:
@@ -317,6 +549,16 @@ class PlaybackView(QWidget):
             self._speed_buttons[s] = b
             h.addWidget(b)
 
+        h.addSpacing(16)
+        self._boxes_btn = QPushButton("BOXES", bar)
+        self._boxes_btn.setObjectName("SpeedButton")
+        self._boxes_btn.setCheckable(True)
+        self._boxes_btn.setChecked(self._boxes_on)
+        self._boxes_btn.setFixedSize(52, 24)
+        self._boxes_btn.setToolTip("Show detection bounding boxes over event playback")
+        self._boxes_btn.clicked.connect(self._toggle_boxes)
+        h.addWidget(self._boxes_btn)
+
         h.addStretch(1)
 
         self._cursor_label = QLabel("--:--:--", bar)
@@ -350,14 +592,17 @@ class PlaybackView(QWidget):
                 self._load_all_at_cursor()
 
     def _highlight_calendar_dates(self) -> None:
-        # Clear previous formats and mark days that have clips
+        # Clear previous formats and mark days that have content for this mode.
         default_fmt = QTextCharFormat()
         self._calendar.setDateTextFormat(QDate(), default_fmt)
-        with_clips = dates_with_clips(self._library)
+        if self._mode == "events":
+            days = event_dates(self._events)
+        else:
+            days = dates_with_clips(self._library)
         hl_fmt = QTextCharFormat()
         hl_fmt.setForeground(QColor(theme.ACCENT))
         hl_fmt.setFontWeight(QFont.Weight.Bold)
-        for d in with_clips:
+        for d in days:
             self._calendar.setDateTextFormat(QDate(d.year, d.month, d.day), hl_fmt)
 
     # --- Slots ---
@@ -366,6 +611,9 @@ class PlaybackView(QWidget):
         qd = self._calendar.selectedDate()
         self._selected_day = _date(qd.year(), qd.month(), qd.day())
         self._timeline.set_day(self._selected_day)
+        if self._mode == "events":
+            self._populate_events_list()
+            return
         # Jump cursor to the start of the earliest clip that day (if any)
         first_dt: datetime | None = None
         for cam_id, clips in self._library.items():
@@ -410,13 +658,24 @@ class PlaybackView(QWidget):
         self._is_playing = not self._is_playing
         self._play_btn.set_kind(IconButton.KIND_PAUSE if self._is_playing else IconButton.KIND_PLAY)
         for tile in self._tiles:
-            if tile._camera.index in self._selected_cams:
-                if self._is_playing:
-                    tile.play()
-                else:
-                    tile.pause()
+            if self._mode == "events":
+                active = self._current_event is not None and tile._camera.index in self._current_event.clips
+            else:
+                active = tile._camera.index in self._selected_cams
+            if not active:
+                continue
+            tile.play() if self._is_playing else tile.pause()
 
     def _jump_relative(self, seconds: int) -> None:
+        if self._mode == "events":
+            if self._current_event is None:
+                return
+            self._event_pos = max(0.0, self._event_pos + seconds)
+            for tile in self._tiles:
+                if tile._camera.index in self._current_event.clips:
+                    tile.seek(self._event_pos)
+            self._update_event_label()
+            return
         self._cursor = self._cursor + timedelta(seconds=seconds)
         self._load_all_at_cursor()
 
@@ -435,10 +694,24 @@ class PlaybackView(QWidget):
     def _advance_cursor(self) -> None:
         if not self._is_playing:
             return
+        if self._mode == "events":
+            # Players advance themselves; we only track position for the label.
+            self._event_pos += 0.25 * self._speed
+            self._update_event_label()
+            return
         # Advance by elapsed wall time * speed
         self._cursor = self._cursor + timedelta(seconds=0.25 * self._speed)
         self._timeline.set_playhead(self._cursor)
         self._update_cursor_label()
+
+    def _update_event_label(self) -> None:
+        ev = self._current_event
+        if ev is None:
+            return
+        self._cursor_label.setText(
+            f"{ev.start_at:%H:%M:%S}  +{self._event_pos:0.0f}s  ·  "
+            f"cam{ev.trigger_cam}  ·  {ev.pretty}"
+        )
 
     def _update_cursor_label(self) -> None:
         self._cursor_label.setText(self._cursor.strftime("%Y-%m-%d  %H:%M:%S"))

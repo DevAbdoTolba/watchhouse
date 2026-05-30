@@ -3,7 +3,7 @@ toggleable bottom-docked admin log console."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -27,8 +27,10 @@ from app.core.log import bus
 from app.core.playback_probe import PlaybackProbeWorker
 from app.core.probe import ProbeWorker
 from app.core.analyzer import SegmentAnalyzer
+from app.core.events import EventConfig
 from app.core.recorder import RecorderSupervisor
 from app.ui.camera_tile import CameraTile
+from app.ui.grid_focus import GridFocus
 from app.ui.console_panel import ConsolePanel
 from app.ui.playback_view import PlaybackView
 from app.ui.wipe_dialog import WipeDialog
@@ -48,6 +50,11 @@ class MainWindow(QMainWindow):
         self._size_to_screen()
 
         self._cameras = default_cameras()
+        # Cameras armed to trigger event detection. From DETECTION_CAMERAS
+        # (defaults to all); the user can still toggle each tile live.
+        self._armed_cameras: set[int] = {
+            c.index for c in self._cameras if c.index in settings.detection_cameras
+        }
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -218,9 +225,19 @@ class MainWindow(QMainWindow):
         for i, cam in enumerate(cameras):
             default_stream = settings.cam_defaults[i]
             tile = CameraTile(cam, settings, default_stream, parent=wrap)
+            tile.event_arm_toggled.connect(self._on_arm_toggled)
             tiles.append(tile)
             row, col = divmod(i, 2)
             grid.addWidget(tile, row, col)
+
+        self._grid_focus = GridFocus(
+            grid, tiles,
+            index_of=lambda t: t._camera.index,
+            set_selected=lambda t, on: t.set_focus_selected(on),
+            parent=self,
+        )
+        for tile in tiles:
+            tile.double_clicked.connect(self._grid_focus.handle_double_click)
         return wrap, tiles
 
     def _build_status_bar(self, settings: Settings) -> QWidget:
@@ -377,18 +394,55 @@ class MainWindow(QMainWindow):
             bus.warn("AI", f"model missing ({model}); detection disabled this session")
             self._status_ai.setText("AI: no model")
             return
+        event_cfg = EventConfig(
+            enabled=self._settings.event_extraction_enabled,
+            pre_roll_s=self._settings.event_pre_roll_s,
+            post_roll_s=self._settings.event_post_roll_s,
+            merge_gap_s=self._settings.event_merge_gap_s,
+            min_hits=self._settings.event_min_hits,
+        )
         self._analyzer = SegmentAnalyzer(
             model_path=model,
             conf=self._settings.detection_conf,
             sample_seconds=self._settings.detection_sample_seconds,
+            event_cfg=event_cfg,
+            events_dir=self._settings.events_dir,
+            recording_dir=self._settings.recording_dir,
+            cam_ids=[cam.index for cam in self._cameras],
+            armed=set(self._armed_cameras),
             parent=self,
         )
         self._analyzer.totals_changed.connect(self._on_ai_totals)
+        self._analyzer.event_extracted.connect(self._on_event_extracted)
         self._analyzer.start()
-        self._status_ai.setText("AI: 0P / 0V")
+        self._status_ai.setText(self._ai_status_text(0, 0))
+
+    def _ai_status_text(self, person_segments: int, vehicle_segments: int) -> str:
+        n = len(self._armed_cameras)
+        total = len(self._cameras)
+        return f"AI: {n}/{total} armed  {person_segments}P / {vehicle_segments}V"
+
+    @Slot(int, bool)
+    def _on_arm_toggled(self, cam_index: int, armed: bool) -> None:
+        if armed:
+            self._armed_cameras.add(cam_index)
+        else:
+            self._armed_cameras.discard(cam_index)
+        if self._analyzer is not None:
+            self._analyzer.set_armed(set(self._armed_cameras))
+        # refresh the armed count in the status bar without waiting for a scan
+        self._status_ai.setText(self._ai_status_text(0, 0))
+
+    def _on_event_extracted(self, clip) -> None:
+        cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"
+        bus.info(
+            "EVT",
+            f"event saved: cam{clip.cam_id} triggered {clip.start_at:%H:%M:%S} "
+            f"{clip.label}  ({cams})  -> {clip.folder}",
+        )
 
     def _on_ai_totals(self, person_segments: int, vehicle_segments: int) -> None:
-        self._status_ai.setText(f"AI: {person_segments}P / {vehicle_segments}V")
+        self._status_ai.setText(self._ai_status_text(person_segments, vehicle_segments))
 
     def _on_recorder_stats(self, segments: int, total_bytes: int, active: int) -> None:
         if active == 0 and segments == 0:

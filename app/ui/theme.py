@@ -149,6 +149,44 @@ QPushButton#ToolbarAction:pressed {{
     color: {ACCENT};
 }}
 
+#EventArm {{
+    background: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT_DIM};
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    padding: 3px 9px;
+}}
+#EventArm:hover {{
+    border-color: {TEXT_MUTED};
+    color: {TEXT};
+}}
+#EventArm:checked {{
+    background: rgba(78, 166, 131, 0.12);
+    border-color: {OK};
+    color: {OK};
+}}
+
+#TileInfo {{
+    background: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 11px;
+    color: {TEXT_MUTED};
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0;
+}}
+#TileInfo:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+#TileInfo[slow="true"] {{
+    border-color: {WARN};
+    color: {WARN};
+}}
+
 #TileReload {{
     background: transparent;
     border: 1px solid {BORDER_2};
@@ -214,6 +252,21 @@ QDockWidget#Console::title {{
     border-color: {ACCENT};
     color: {ACCENT};
 }}
+#ConsoleFilter {{
+    background: transparent;
+    border: 1px solid {BORDER_2};
+    border-radius: 2px;
+    color: {TEXT_MUTED};
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 1px 6px;
+    min-height: 20px;
+}}
+#ConsoleFilter:hover {{
+    border-color: {ACCENT};
+    color: {TEXT};
+}}
 #ConsoleBody {{
     background: {INK};
 }}
@@ -249,6 +302,45 @@ QPushButton#ModeToggle:checked {{
     background-color: {ACCENT_BG};
     border-color: {ACCENT};
     color: {ACCENT};
+}}
+
+#TileDetected {{
+    color: {ACCENT};
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.10em;
+}}
+#CameraTile[triggered="true"] {{
+    border: 1px solid {ACCENT};
+}}
+#CameraTile[selected="true"] {{
+    border: 2px solid {ACCENT};
+}}
+
+QComboBox#EventConfFilter {{
+    padding: 2px 6px;
+    min-height: 18px;
+    font-size: 10px;
+}}
+
+QListWidget#EventsList {{
+    background: {VIDEO_BG};
+    border: 1px solid {BORDER};
+    border-radius: 2px;
+    color: {TEXT};
+    outline: none;
+}}
+QListWidget#EventsList::item {{
+    border-bottom: 1px solid {BORDER};
+    padding: 4px;
+    color: {TEXT_MUTED};
+}}
+QListWidget#EventsList::item:selected {{
+    background: {ACCENT_BG};
+    color: {ACCENT};
+}}
+QListWidget#EventsList::item:hover {{
+    background: {SURFACE_2};
 }}
 
 #PlaybackSidebar {{

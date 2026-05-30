@@ -17,6 +17,31 @@ from PySide6.QtGui import QImage
 
 from app.core.log import bus
 
+# How long (s) a sampled box set stays drawn until the next sample. Detection
+# runs ~1 fps, so we hold each box briefly to cover the frames in between.
+_BOX_HOLD_S = 1.2
+
+
+def _boxes_at(track: list, pos_s: float):
+    """Nearest box set at or just before pos_s, within the hold window."""
+    best = None
+    best_t = -1.0
+    for t, boxes in track:
+        if t <= pos_s + 0.05 and t > best_t and (pos_s - t) <= _BOX_HOLD_S:
+            best_t = t
+            best = boxes
+    return best or []
+
+
+def _draw_overlay(frame, track: list, pos_s: float) -> None:
+    for x1, y1, x2, y2, label, conf in _boxes_at(track, pos_s):
+        color = (60, 200, 60) if label == "person" else (40, 170, 255)
+        p1 = (int(x1), int(y1))
+        p2 = (int(x2), int(y2))
+        cv2.rectangle(frame, p1, p2, color, 2)
+        cv2.putText(frame, f"{label} {conf:.2f}", (p1[0], max(12, p1[1] - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+
 
 class PlaybackPlayer(QThread):
     frame_ready = Signal(QImage)
@@ -37,6 +62,10 @@ class PlaybackPlayer(QThread):
         self._load_request = False
         self._duration_ms = 0.0
         self._label = label
+        # Detection overlay: a clip-relative box track + on/off toggle. Used by
+        # the Events view to draw bounding boxes as a recorded event plays.
+        self._overlay_track: list | None = None
+        self._overlay_on = False
 
     # Public API (call from GUI thread)
 
@@ -67,6 +96,15 @@ class PlaybackPlayer(QThread):
         with QMutexLocker(self._mutex):
             self._pending_seek_ms = max(0.0, offset_s * 1000.0)
 
+    def set_overlay(self, track: list | None) -> None:
+        """Set the clip-relative box track: [(t, [(x1,y1,x2,y2,label,conf)..])..]"""
+        with QMutexLocker(self._mutex):
+            self._overlay_track = track
+
+    def set_overlay_enabled(self, on: bool) -> None:
+        with QMutexLocker(self._mutex):
+            self._overlay_on = on
+
     def request_stop(self) -> None:
         with QMutexLocker(self._mutex):
             self._stop = True
@@ -90,6 +128,8 @@ class PlaybackPlayer(QThread):
                 self._pending_seek_ms = None
                 paused = self._paused
                 speed = self._speed
+                overlay_on = self._overlay_on
+                track = self._overlay_track
 
             if load_req:
                 if cap is not None:
@@ -141,11 +181,13 @@ class PlaybackPlayer(QThread):
                     self._paused = True
                 continue
 
+            pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+            if overlay_on and track:
+                _draw_overlay(frame, track, pos_ms / 1000.0)
             h, w = frame.shape[:2]
             stride = frame.strides[0]
             qimg = QImage(frame.data, w, h, stride, QImage.Format.Format_BGR888).copy()
             self.frame_ready.emit(qimg)
-            pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
             if now - last_emit_t >= 0.25:
                 self.position_changed.emit(pos_ms / 1000.0)
                 last_emit_t = now

@@ -7,8 +7,12 @@ path and process segments one at a time on this worker thread: open with
 cv2, sample one frame every `sample_seconds` of footage, run the ONNX
 detector, and aggregate per-segment detection counts.
 
-v0.4.0 only *reports* findings (console + a running tally for the status
-bar). v0.4.1 turns detections into extracted event clips + snapshots.
+v0.4.0 only *reported* findings (console + a running tally for the status
+bar). v0.4.2 turns detections into extracted event clips + snapshots: while
+scanning, person/vehicle frames are streamed into `events.PendingEvent`
+accumulators that merge continuous presence (so a stationary person is one
+event, not hundreds), and each completed event is cut into a margin-padded
+clip with a thumbnail under recordings/events/.
 """
 
 from __future__ import annotations
@@ -16,11 +20,13 @@ from __future__ import annotations
 import queue
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 from PySide6.QtCore import QThread, Signal
 
+from app.core import events as evt
 from app.core.detect import Detector
 from app.core.log import bus
 
@@ -35,6 +41,14 @@ def _cam_from_path(path: Path) -> int:
     return 0
 
 
+def _seg_start_from_path(path: Path) -> datetime | None:
+    """Segments are named `2026-05-29T14-15-01.mp4` - the wall-clock start."""
+    try:
+        return datetime.strptime(path.stem, "%Y-%m-%dT%H-%M-%S")
+    except ValueError:
+        return None
+
+
 @dataclass
 class SegmentResult:
     path: Path
@@ -45,6 +59,7 @@ class SegmentResult:
     max_persons: int     # peak person count in a single sampled frame
     max_vehicles: int
     elapsed_s: float
+    events_extracted: int = 0
 
     @property
     def had_activity(self) -> bool:
@@ -54,21 +69,38 @@ class SegmentResult:
 class SegmentAnalyzer(QThread):
     segment_analyzed = Signal(object)   # SegmentResult
     totals_changed = Signal(int, int)   # cumulative person_segments, vehicle_segments
+    event_extracted = Signal(object)    # events.EventClip
 
     def __init__(
         self,
         model_path: Path,
         conf: float = 0.35,
         sample_seconds: float = 1.0,
+        event_cfg: "evt.EventConfig | None" = None,
+        events_dir: Path | None = None,
+        recording_dir: Path | None = None,
+        cam_ids: list[int] | None = None,
+        armed: set[int] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._detector = Detector(model_path, conf_threshold=conf)
         self._sample_seconds = max(0.2, sample_seconds)
+        self._event_cfg = event_cfg or evt.EventConfig()
+        self._events_dir = events_dir
+        self._recording_dir = recording_dir
+        self._cam_ids = list(cam_ids) if cam_ids else []
+        # Cameras that may *trigger* events. None = all armed (the default
+        # on startup). Set live from the UI; reads are atomic enough.
+        self._armed = set(armed) if armed is not None else None
         self._queue: "queue.Queue[Path | None]" = queue.Queue()
         self._stop = False
         self._person_segments = 0
         self._vehicle_segments = 0
+
+    def set_armed(self, armed: set[int]) -> None:
+        """Update which cameras trigger event extraction (live, thread-safe)."""
+        self._armed = set(armed)
 
     def enqueue(self, path: str) -> None:
         if not self._stop:
@@ -104,6 +136,12 @@ class SegmentAnalyzer(QThread):
         if not path.is_file():
             return
         cam_id = _cam_from_path(path)
+        # Disarmed cameras still record (rolling buffer) and can be pulled into
+        # another camera's event, but they never *trigger* detection here.
+        armed = self._armed
+        if armed is not None and cam_id not in armed:
+            return
+        seg_start = _seg_start_from_path(path)
         t0 = time.monotonic()
         cap = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
         if not cap.isOpened():
@@ -113,6 +151,20 @@ class SegmentAnalyzer(QThread):
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
         step = max(1, int(round(fps * self._sample_seconds))) if fps > 0 else 25
+        eff_step_s = (step / fps) if fps > 0 else self._sample_seconds
+
+        extract = (
+            self._event_cfg.enabled
+            and self._events_dir is not None
+            and self._recording_dir is not None
+            and seg_start is not None
+            and cam_id > 0
+        )
+        # Hits closer than the merge gap (plus one sampling interval of slack)
+        # are treated as the same continuous presence.
+        merge_gap = self._event_cfg.merge_gap_s + eff_step_s
+        pending: evt.PendingEvent | None = None
+        completed: list[evt.PendingEvent] = []
 
         frames_sampled = person_frames = vehicle_frames = 0
         max_persons = max_vehicles = 0
@@ -123,6 +175,7 @@ class SegmentAnalyzer(QThread):
             if idx % step == 0:
                 ok, frame = cap.retrieve()
                 if ok and frame is not None:
+                    offset_s = (idx / fps) if fps > 0 else (idx * self._sample_seconds)
                     dets = self._detector.detect(frame)
                     n_person = sum(1 for d in dets if d.is_person)
                     n_vehicle = sum(1 for d in dets if d.is_vehicle)
@@ -131,8 +184,24 @@ class SegmentAnalyzer(QThread):
                     vehicle_frames += 1 if n_vehicle else 0
                     max_persons = max(max_persons, n_person)
                     max_vehicles = max(max_vehicles, n_vehicle)
+                    if extract and (n_person or n_vehicle):
+                        if pending is not None and (offset_s - pending.t_end) > merge_gap:
+                            completed.append(pending)
+                            pending = None
+                        if pending is None:
+                            pending = evt.PendingEvent(
+                                cam_id=cam_id, t_start=offset_s, t_end=offset_s
+                            )
+                        pending.add(offset_s, n_person, n_vehicle, frame.copy(), dets)
             idx += 1
         cap.release()
+        if pending is not None:
+            completed.append(pending)
+
+        duration_s = (idx / fps) if fps > 0 else (idx * self._sample_seconds)
+        events_extracted = 0
+        if extract:
+            events_extracted = self._extract_events(path, seg_start, duration_s, completed)
 
         result = SegmentResult(
             path=path,
@@ -143,6 +212,7 @@ class SegmentAnalyzer(QThread):
             max_persons=max_persons,
             max_vehicles=max_vehicles,
             elapsed_s=time.monotonic() - t0,
+            events_extracted=events_extracted,
         )
         if person_frames:
             self._person_segments += 1
@@ -153,7 +223,39 @@ class SegmentAnalyzer(QThread):
             "AI",
             f"cam{cam_id}: {path.name}  sampled {frames_sampled}f in {result.elapsed_s:.1f}s  "
             f"person {person_frames}f (max {max_persons})  "
-            f"vehicle {vehicle_frames}f (max {max_vehicles})",
+            f"vehicle {vehicle_frames}f (max {max_vehicles})  "
+            f"events {events_extracted}",
         )
         self.segment_analyzed.emit(result)
         self.totals_changed.emit(self._person_segments, self._vehicle_segments)
+
+    def _extract_events(
+        self,
+        path: Path,
+        seg_start: datetime,
+        duration_s: float,
+        pending: list[evt.PendingEvent],
+    ) -> int:
+        count = 0
+        for ev in pending:
+            try:
+                clip = evt.write_event(
+                    path, seg_start, duration_s, ev, self._events_dir,
+                    self._event_cfg, self._recording_dir, self._cam_ids,
+                )
+            except Exception as e:
+                bus.error("EVT", f"event write failed in {path.name}: {e!s}")
+                continue
+            if clip is None:
+                continue
+            count += 1
+            span = ev.t_end - ev.t_start
+            cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"
+            bus.info(
+                "EVT",
+                f"cam{clip.cam_id} triggered {clip.start_at:%H:%M:%S} {clip.label}  "
+                f"presence {span:.0f}s -> {clip.duration_s:.0f}s clip  "
+                f"captured [{cams}]  {clip.folder.name}",
+            )
+            self.event_extracted.emit(clip)
+        return count

@@ -76,6 +76,14 @@ class Settings:
     detection_conf: float
     detection_sample_seconds: float
     detection_model: Path
+    detection_cameras: tuple[int, ...]  # cameras armed for events on startup
+    # Event extraction (v0.4.2)
+    event_extraction_enabled: bool
+    event_pre_roll_s: float
+    event_post_roll_s: float
+    event_merge_gap_s: float
+    event_min_hits: int
+    events_dir: Path
 
     @classmethod
     def load(cls) -> "Settings":
@@ -113,6 +121,13 @@ class Settings:
             detection_conf=float(os.environ.get("DETECTION_CONF", "0.35")),
             detection_sample_seconds=float(os.environ.get("DETECTION_SAMPLE_SECONDS", "1.0")),
             detection_model=_resolve_model_path(os.environ.get("DETECTION_MODEL")),
+            detection_cameras=_detection_cameras(),
+            event_extraction_enabled=_truthy(os.environ.get("EVENT_EXTRACTION_ENABLED", "1")),
+            event_pre_roll_s=float(os.environ.get("EVENT_PRE_ROLL_SECONDS", "5")),
+            event_post_roll_s=float(os.environ.get("EVENT_POST_ROLL_SECONDS", "5")),
+            event_merge_gap_s=float(os.environ.get("EVENT_MERGE_GAP_SECONDS", "5")),
+            event_min_hits=max(1, int(os.environ.get("EVENT_MIN_HITS", "2"))),
+            events_dir=Path(os.environ.get("EVENT_DIR", str(rec_dir / "events"))),
         )
         bus.info(
             "CFG",
@@ -131,7 +146,14 @@ class Settings:
             f"detection: enabled={s.detection_enabled} conf={s.detection_conf:g} "
             f"sample={s.detection_sample_seconds:g}s "
             f"model={'found' if s.detection_model.is_file() else 'MISSING'} "
-            f"({s.detection_model.name})",
+            f"({s.detection_model.name}) armed_cams={s.detection_cameras}",
+        )
+        bus.info(
+            "CFG",
+            f"events: enabled={s.event_extraction_enabled} "
+            f"pre={s.event_pre_roll_s:g}s post={s.event_post_roll_s:g}s "
+            f"merge_gap={s.event_merge_gap_s:g}s min_hits={s.event_min_hits} "
+            f"dir={s.events_dir}",
         )
         return s
 
@@ -153,6 +175,16 @@ def _resolve_model_path(override: str | None) -> Path:
         if c.is_file():
             return c
     return candidates[0]  # report the most likely intended location even if missing
+
+
+def _detection_cameras() -> tuple[int, ...]:
+    """Cameras armed for event detection on startup. `DETECTION_CAMERAS` is a
+    comma list of camera numbers (e.g. "2,4" for inside-only); unset = all."""
+    raw = os.environ.get("DETECTION_CAMERAS")
+    if not raw:
+        return (1, 2, 3, 4)
+    out = [int(p) for p in (s.strip() for s in raw.split(",")) if p.isdigit()]
+    return tuple(out) if out else (1, 2, 3, 4)
 
 
 def _retention_minutes() -> int:

@@ -19,6 +19,7 @@ from app.core.log import bus, mask_url
 class StreamWorker(QThread):
     frame_ready = Signal(QImage)
     status_changed = Signal(str)  # "connecting" | "online" | "reconnecting" | "stopped"
+    stats_changed = Signal(float, int, int)  # measured fps, width, height
 
     INITIAL_BACKOFF_S = 1.0
     MAX_BACKOFF_S = 30.0
@@ -98,6 +99,8 @@ class StreamWorker(QThread):
 
             last_frame_at = time.monotonic()
             first_frame_seen = False
+            stat_count = 0
+            stat_t0 = time.monotonic()
             while True:
                 with QMutexLocker(self._mutex):
                     if self._stop or self._reopen:
@@ -125,6 +128,16 @@ class StreamWorker(QThread):
                 stride = frame.strides[0]
                 qimg = QImage(frame.data, w, h, stride, QImage.Format.Format_BGR888).copy()
                 self.frame_ready.emit(qimg)
+
+                # Measured display FPS over ~1s windows - the live "is HQ
+                # keeping up?" signal surfaced in the tile's (!) badge.
+                stat_count += 1
+                dt = now - stat_t0
+                if dt >= 1.0:
+                    self.stats_changed.emit(stat_count / dt, w, h)
+                    stat_count = 0
+                    stat_t0 = now
+
                 self.msleep(self.TARGET_INTERVAL_MS)
 
             cap.release()

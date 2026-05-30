@@ -50,7 +50,6 @@ class RecorderWorker(QThread):
     """One ffmpeg subprocess per camera. Restarts on death with backoff."""
 
     status_changed = Signal(str)  # "starting" | "recording" | "reconnecting" | "stopped" | "error"
-    segment_opened = Signal(str)  # absolute path to a new segment
 
     INITIAL_BACKOFF_S = 1.0
     MAX_BACKOFF_S = 30.0
@@ -152,14 +151,10 @@ class RecorderWorker(QThread):
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if not line:
                     continue
-                if "Opening '" in line and ".mp4'" in line:
-                    try:
-                        fname = line.split("Opening '", 1)[1].split("'", 1)[0]
-                        bus.info("REC", f"cam{self._camera.index}: segment -> {Path(fname).name}")
-                        self.segment_opened.emit(fname)
-                    except Exception:
-                        pass
-                elif "error" in line.lower() or "warning" in line.lower():
+                # Segment rollovers are detected by the supervisor's filesystem
+                # watcher, not from here - ffmpeg doesn't print its "Opening"
+                # line at this log level. We only surface real errors/warnings.
+                if "error" in line.lower() or "warning" in line.lower():
                     bus.warn("REC", f"cam{self._camera.index}: ffmpeg: {line}")
 
             rc = self._proc.wait() if self._proc.poll() is None else self._proc.returncode
@@ -201,6 +196,7 @@ class RecorderSupervisor(QObject):
 
     PRUNE_INTERVAL_MS = 5 * 60 * 1000   # every 5 minutes
     STATS_INTERVAL_MS = 10 * 1000       # every 10 seconds
+    SEGMENT_SCAN_INTERVAL_MS = 10 * 1000  # watch for rolled-over segments
 
     def __init__(self, settings: Settings, cameras: tuple[Camera, ...], parent=None) -> None:
         super().__init__(parent)
@@ -208,13 +204,18 @@ class RecorderSupervisor(QObject):
         self._cameras = cameras
         self._workers: list[RecorderWorker] = []
         self._active = 0
-        # Per-camera last segment path. When a worker opens a new segment the
-        # previously-seen one for that camera is finalized -> emit it.
+        # Per-camera newest segment path seen by the filesystem watcher. When a
+        # *newer* file appears the previous newest is finalized -> emit it. We
+        # watch the directory rather than parse ffmpeg's stderr because ffmpeg
+        # only prints its "Opening '...'" segment line at -loglevel verbose,
+        # not at the warning level we run it at.
         self._last_segment: dict[int, str] = {}
         self._prune_timer = QTimer(self)
         self._prune_timer.timeout.connect(self._prune_old_segments)
         self._stats_timer = QTimer(self)
         self._stats_timer.timeout.connect(self._refresh_stats)
+        self._segment_timer = QTimer(self)
+        self._segment_timer.timeout.connect(self._scan_for_closed_segments)
 
     def start(self) -> None:
         if not self._settings.recording_enabled:
@@ -229,30 +230,62 @@ class RecorderSupervisor(QObject):
         for cam in self._cameras:
             w = RecorderWorker(cam, self._settings, parent=self)
             w.status_changed.connect(lambda st, c=cam.index: self._on_worker_status(c, st))
-            w.segment_opened.connect(lambda p, c=cam.index: self._on_segment_opened(c, p))
             self._workers.append(w)
             w.start()
 
+        # Startup sweep: drop stale segments left behind by a previous (or
+        # crashed) session *before* new recording begins, so the on-disk
+        # window is correct from the first second rather than 5 minutes in.
+        # imported/ and events/ are protected and never swept.
+        self._prune_old_segments(startup=True)
+
+        # Baseline the segment watcher against whatever already exists so we
+        # only fire on segments that close from now on (no startup backlog).
+        self._scan_for_closed_segments(baseline=True)
+
         self._prune_timer.start(self.PRUNE_INTERVAL_MS)
         self._stats_timer.start(self.STATS_INTERVAL_MS)
-        # First prune + stats immediately
-        QTimer.singleShot(2000, self._prune_old_segments)
+        self._segment_timer.start(self.SEGMENT_SCAN_INTERVAL_MS)
         QTimer.singleShot(2000, self._refresh_stats)
 
     def stop(self, wait_ms: int = 5000) -> None:
         self._prune_timer.stop()
         self._stats_timer.stop()
+        self._segment_timer.stop()
         for w in self._workers:
             w.request_stop()
         for w in self._workers:
             w.wait(wait_ms)
         self._workers.clear()
 
-    def _on_segment_opened(self, cam_index: int, new_path: str) -> None:
-        prev = self._last_segment.get(cam_index)
-        self._last_segment[cam_index] = new_path
-        if prev and prev != new_path:
-            self.segment_closed.emit(prev)
+    def _scan_for_closed_segments(self, baseline: bool = False) -> None:
+        """Poll each camera dir for a newer segment file. Segment filenames are
+        ISO timestamps, so the lexically-greatest name is the newest (currently
+        in-progress) file. When it advances, the file that *was* newest has been
+        finalized by ffmpeg (moov atom written) and is emitted for analysis.
+
+        `baseline=True` just records the current newest per camera without
+        emitting, so existing files aren't re-analyzed on startup."""
+        base = self._settings.recording_dir
+        for cam in self._cameras:
+            cam_dir = base / f"cam{cam.index}"
+            if not cam_dir.is_dir():
+                continue
+            names = sorted(p.name for p in cam_dir.glob("*.mp4"))
+            if not names:
+                continue
+            newest = str(cam_dir / names[-1])
+            prev = self._last_segment.get(cam.index)
+            if prev == newest:
+                continue
+            self._last_segment[cam.index] = newest
+            if baseline or prev is None:
+                continue
+            # `prev` was the newest last time and a later file now exists, so
+            # `prev` is finalized.
+            if Path(prev).is_file():
+                bus.info("REC", f"cam{cam.index}: segment closed -> {Path(prev).name}")
+                self.segment_closed.emit(prev)
 
     def _on_worker_status(self, cam_index: int, status: str) -> None:
         if status == "recording":
@@ -260,21 +293,35 @@ class RecorderSupervisor(QObject):
         elif status in ("stopped", "error"):
             self._active = sum(1 for w in self._workers if w.isRunning())
 
-    def _prune_old_segments(self) -> None:
+    def _protected_roots(self) -> list[Path]:
+        """Subtrees the pruner must never touch: user-curated imported clips
+        and extracted AI event evidence. Both outlive the rolling buffer."""
+        base = self._settings.recording_dir
+        roots: list[Path] = []
+        for p in (base / "imported", self._settings.events_dir):
+            try:
+                roots.append(p.resolve())
+            except OSError:
+                continue
+        return roots
+
+    def _is_protected(self, f: Path, protected: list[Path]) -> bool:
+        try:
+            parents = f.resolve().parents
+        except OSError:
+            return True  # can't resolve -> err on the side of keeping it
+        return any(root in parents for root in protected)
+
+    def _prune_old_segments(self, startup: bool = False) -> None:
         base = self._settings.recording_dir
         if not base.is_dir():
             return
         cutoff = time.time() - (self._settings.recording_retention_minutes * 60)
+        protected = self._protected_roots()
         pruned = 0
         freed_bytes = 0
-        # Never prune anything in the imported/ subtree - those are user
-        # curated clips, not part of the rolling capture buffer.
-        imported_root = (base / "imported").resolve()
         for f in base.rglob("*.mp4"):
-            try:
-                if imported_root in f.resolve().parents:
-                    continue
-            except OSError:
+            if self._is_protected(f, protected):
                 continue
             try:
                 stat = f.stat()
@@ -288,19 +335,25 @@ class RecorderSupervisor(QObject):
                 except OSError:
                     continue
         if pruned:
+            prefix = "startup sweep" if startup else "retention"
             bus.info(
                 "REC",
-                f"retention: pruned {pruned} segment(s) older than "
+                f"{prefix}: pruned {pruned} segment(s) older than "
                 f"{self._settings.recording_retention_minutes}min, "
                 f"freed {freed_bytes / 1024 / 1024:.1f} MB",
             )
+        elif startup:
+            bus.info("REC", "startup sweep: no stale segments to prune")
 
     def _refresh_stats(self) -> None:
         base = self._settings.recording_dir
         segs = 0
         total = 0
         if base.is_dir():
+            protected = self._protected_roots()
             for f in base.rglob("*.mp4"):
+                if self._is_protected(f, protected):
+                    continue
                 try:
                     total += f.stat().st_size
                     segs += 1
