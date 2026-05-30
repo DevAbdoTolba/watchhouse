@@ -49,6 +49,7 @@ class _Strip(QWidget):
     Renders only the slice (`_view_start_s` .. `_view_end_s`) of `_day`."""
 
     seek_requested = Signal(datetime)
+    reset_requested = Signal()   # double-click: zoom back out to the whole day
 
     LANE_HEIGHT = 14
     LANE_PADDING = 3
@@ -209,6 +210,13 @@ class _Strip(QWidget):
         target = datetime.combine(self._day, _time()) + timedelta(seconds=s)
         self.seek_requested.emit(target)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        # Double-click anywhere on a strip zooms back out to the full day, so
+        # the user can escape a tight zoom without dragging the handles.
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.reset_requested.emit()
+            event.accept()
+
 
 class _OverviewStrip(_Strip):
     """The 24h minimap. Lanes are thinner, no per-camera label gutter, and a
@@ -351,6 +359,9 @@ class TimelineDrawer(QWidget):
 
         self._overview.viewport_changed.connect(self._detail.set_view_range)
         self._detail.seek_requested.connect(self.seek_requested.emit)
+        # Double-click either strip -> zoom all the way back out to the day.
+        self._overview.reset_requested.connect(self._reset_to_full_day)
+        self._detail.reset_requested.connect(self._reset_to_full_day)
         # Default: full-day view, all visible
         self._overview.set_viewport(0.0, _DAY_SECONDS, emit=False)
         self._detail.set_view_range(0.0, _DAY_SECONDS)
@@ -371,3 +382,7 @@ class TimelineDrawer(QWidget):
     def set_playhead(self, when: datetime | None) -> None:
         self._overview.set_playhead(when)
         self._detail.set_playhead(when)
+
+    def _reset_to_full_day(self) -> None:
+        """Zoom the viewport back out to the entire day (double-click)."""
+        self._overview.set_viewport(0.0, _DAY_SECONDS)
