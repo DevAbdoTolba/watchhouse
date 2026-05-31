@@ -20,4 +20,4 @@ os.environ.setdefault(
     "|timeout;5000000",
 )
 
-__version__ = "0.4.39"
+__version__ = "0.4.40"

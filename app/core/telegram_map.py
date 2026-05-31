@@ -54,11 +54,15 @@ class TelegramMap:
         except OSError as e:
             bus.warn("TG", f"could not write telegram map: {e!s}")
 
-    def record(self, message_id: int | None, folder: str, cam: int, kind: str) -> None:
+    def record(self, message_id: int | None, folder: str, cam: int, kind: str,
+               t: float = 0.0) -> None:
         if not message_id:
             return
         with self._lock:
-            self._data[str(message_id)] = {"f": folder, "c": int(cam), "k": kind}
+            entry = {"f": folder, "c": int(cam), "k": kind}
+            if t:
+                entry["t"] = float(t)  # epoch secs; live alerts use it to find the clip
+            self._data[str(message_id)] = entry
             overflow = len(self._data) - _CAP
             if overflow > 0:  # drop oldest insertions (dict preserves order)
                 for key in list(self._data.keys())[:overflow]:

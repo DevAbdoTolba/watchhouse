@@ -176,6 +176,19 @@ def api_send_video(token: str, chat_id: str, caption: str, path: Path) -> dict:
                            "document", path)
 
 
+def api_edit_message(token: str, chat_id: str, message_id: int, text: str) -> dict:
+    return _call(token, "editMessageText",
+                 {"chat_id": chat_id.strip(), "message_id": message_id, "text": text})
+
+
+def api_delete_message(token: str, chat_id: str, message_id: int) -> dict:
+    try:
+        return _call(token, "deleteMessage",
+                     {"chat_id": chat_id.strip(), "message_id": message_id})
+    except Exception:
+        return {"ok": False}
+
+
 def _message_id(result: dict) -> int | None:
     try:
         return int(result.get("result", {}).get("message_id"))
@@ -190,7 +203,7 @@ class _SendTask(QRunnable):
 
     def __init__(self, token: str, chat_id: str, caption: str,
                  thumb: Path | None, tmap=None, folder: str = "",
-                 cam: int = 0) -> None:
+                 cam: int = 0, kind: str = "thumb", t: float = 0.0) -> None:
         super().__init__()
         self._token = token
         self._chat_id = chat_id
@@ -199,6 +212,8 @@ class _SendTask(QRunnable):
         self._map = tmap
         self._folder = folder
         self._cam = cam
+        self._kind = kind
+        self._t = t
 
     def run(self) -> None:
         try:
@@ -207,9 +222,12 @@ class _SendTask(QRunnable):
                                         self._caption, self._thumb)
                 if result.get("ok"):
                     bus.info("TG", "alert sent (photo)")
-                    if self._map is not None and self._folder:
+                    # Record so a reply can drill in. Segment thumbs carry a
+                    # folder; live alerts carry only cam + timestamp (kind
+                    # "live") and resolve to an event clip at reply time.
+                    if self._map is not None and (self._folder or self._kind == "live"):
                         self._map.record(_message_id(result), self._folder,
-                                         self._cam, "thumb")
+                                         self._cam, self._kind, self._t)
                 else:
                     bus.warn("TG", f"sendPhoto rejected: {result.get('description', '?')}")
             else:
@@ -334,16 +352,23 @@ class TelegramNotifier(QObject):
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
                                    tmap=tmap, folder=folder_s, cam=cam_id))
 
-    def notify_live(self, cam_label: str, title: str, thumb_path: str) -> None:
-        """Instant real-time alert (the live tier): fire-and-forget photo +
-        title, no event folder, no reply-drill (the evidence clip isn't ready
-        yet - that's the slower segment tier's job)."""
+    def notify_live(self, cam_id: int, cam_label: str, title: str,
+                    thumb_path: str) -> None:
+        """Instant real-time alert (the live tier): photo + title, sent now.
+
+        The evidence clip doesn't exist yet (segment tier is minutes behind), so
+        we record this photo in the map keyed by camera + timestamp (kind
+        'live'). When the user replies, _dispatch_reply resolves it to the
+        matching event clip if it has since been extracted, or tells them it's
+        still being prepared so they can reply again shortly."""
         if not self.enabled:
             return
         when = time.strftime("%H:%M:%S")
         caption = f"\U0001F534 NOW · {cam_label}: {title}  {when}"
         thumb = Path(thumb_path) if thumb_path else None
-        self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb))
+        tmap = self._map if self._commands else None
+        self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
+                                   tmap=tmap, cam=cam_id, kind="live", t=time.time()))
 
     @staticmethod
     def _what(clip) -> str:
@@ -476,7 +501,22 @@ class TelegramPoller(QThread):
         """Progressive angle delivery. First reply to an event -> its detecting
         camera(s). Next reply -> the remaining angles. Once every available
         angle has been sent -> 'no more angles'. State is per event folder, so
-        replying to the thumbnail OR to any sent clip advances the same event."""
+        replying to the thumbnail OR to any sent clip advances the same event.
+
+        A reply to a LIVE alert (kind 'live') has no folder yet: resolve it to
+        the matching event clip if the segment tier has since extracted it, else
+        tell the user it's still being prepared so they can reply again."""
+        if entry.get("k") == "live" and not entry.get("f"):
+            resolved = self._resolve_live_event(int(entry.get("c", 0)),
+                                                 float(entry.get("t", 0.0)))
+            if resolved is None:
+                api_send_message(
+                    self._token, self._chat_id,
+                    "⏳ The clip for this moment is still being prepared "
+                    "(can take a few minutes). Reply again shortly and I'll send it.")
+                return
+            entry = {"f": str(resolved), "c": int(entry.get("c", 0)), "k": "thumb"}
+
         folder = Path(entry.get("f", ""))
         if not folder.is_dir():
             api_send_message(self._token, self._chat_id,
@@ -543,6 +583,35 @@ class TelegramPoller(QThread):
             if m:
                 out.append(int(m.group(1)))
         return sorted(out)
+
+    _LIVE_MATCH_WINDOW_S = 180.0  # a live alert and its event share a wall-clock
+
+    def _resolve_live_event(self, cam: int, t_epoch: float):
+        """Find the event folder for a live alert: an event from `cam` whose
+        wall-clock start is within a few minutes of the alert time `t_epoch`.
+        Returns the folder Path, or None if the segment tier hasn't extracted it
+        yet (the user is told to reply again). Picks the nearest in time."""
+        if not self._events_dir or not t_epoch:
+            return None
+        try:
+            from app.core.event_library import scan_events
+            events = scan_events(Path(self._events_dir))
+        except Exception as e:
+            bus.warn("TG", f"live-resolve scan failed: {e!s}")
+            return None
+        best = None
+        best_dt = self._LIVE_MATCH_WINDOW_S
+        for ev in events:
+            if getattr(ev, "trigger_cam", 0) != cam:
+                continue
+            start = getattr(ev, "start_at", None)
+            if start is None:
+                continue
+            dt = abs(start.timestamp() - t_epoch)
+            if dt <= best_dt:
+                best_dt = dt
+                best = ev.folder
+        return best
 
     def _detecting_cams(self, folder: Path, fallback_cam: int) -> list[int]:
         """The camera(s) that actually detected the event - sent first on the

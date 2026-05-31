@@ -561,7 +561,7 @@ class MainWindow(QMainWindow):
 
     def _on_live_alert(self, cam_id: int, title: str, thumb_path: str) -> None:
         label = self._cam_labels.get(cam_id, f"camera {cam_id}")
-        self._notifier.notify_live(label, title, thumb_path)
+        self._notifier.notify_live(cam_id, label, title, thumb_path)
 
     def _on_event_extracted(self, clip) -> None:
         cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"
