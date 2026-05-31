@@ -247,6 +247,9 @@ def _event_hold_timeout_s() -> float:
     event never references an already-pruned segment."""
     if (raw := os.environ.get("EVENT_HOLD_TIMEOUT_SECONDS")) is not None:
         return max(60.0, float(raw))
+    # No explicit override: the hold tracks segment length (2x, so the next
+    # rollover always lands first). Change RECORDING_SEGMENT_MINUTES and this
+    # follows automatically; set EVENT_HOLD_TIMEOUT_SECONDS to decouple them.
     seg_min = int(os.environ.get("RECORDING_SEGMENT_MINUTES", "3"))
     hold = max(5.0, 2 * seg_min) * 60.0
     retention_s = _retention_minutes() * 60.0
