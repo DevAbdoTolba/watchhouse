@@ -105,6 +105,35 @@ against the MTMC literature and how Frigate users build this on top of zones):
   (3) optional later: *learn* transit-time distributions from observed
   departures/arrivals instead of hand-tuning them.
 
+### Entering vs leaving (direction of travel)
+**Objective:** for each event, say whether the person is coming IN or going OUT
+(e.g. "Person entered via the front door" vs "Person left"). Far more useful
+than a bare "person detected".
+
+How (the right way, NOT body orientation):
+- **Do NOT use face-vs-back.** A person can walk backward / moon-walk, glance
+  over a shoulder, or be side-on — body orientation lies. Direction must come
+  from where they actually MOVE, not which way they face.
+- **Track the trajectory with vanilla CV (cheap, no extra model).** We already
+  get a bounding box per sampled frame from yolov8n. Follow the box centroid
+  across the frames before+after the trigger; the sign of its displacement is
+  the direction of travel. (Plain centroid tracking / optical-flow if needed -
+  no new ML, fast on CPU.)
+- **Per-camera zones** (hand-drawn): mark a near/inside region and a far/outside
+  region, or a single threshold "tripwire" line (the doorway). Direction = which
+  zone the centroid crosses FROM and TO. This is the standard line-crossing /
+  zone-transition trick used in people counters. Reuses the same zone editor the
+  spatial-handoff and polygon-zones features want - build the zone tool once.
+- **Per-camera Interior/Exterior dropdown** (in settings/UI): tells the engine
+  what "in" and "out" mean for that camera (an interior-stairs cam vs a
+  street-facing cam have opposite "inside" directions). Pairs with the zones.
+- Output: tag the event ("entering"/"leaving"/"passing") -> show in the events
+  list, the Telegram caption, and (later) a simple occupancy count
+  (entries - exits = how many people are currently inside).
+- Phase it: (1) Interior/Exterior dropdown + one tripwire line per camera +
+  centroid-direction = entering/leaving tag; (2) full polygon near/far zones;
+  (3) occupancy counter. Shares the zone editor with spatial-handoff + zones.
+
 ### Cross-camera same-person de-duplication (Re-ID)
 One person walking past multiple cameras currently fires up to 4 separate
 events; 3 people => up to 12. Fuse detections of the *same individual* across
