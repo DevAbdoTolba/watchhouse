@@ -360,8 +360,19 @@ class CameraTile(QFrame):
             parent=self,
         )
         self._worker.frame_ready.connect(self._video.set_frame)
+        self._worker.frame_ready.connect(self._tap_frame)
         self._worker.status_changed.connect(self._on_status)
         self._worker.stats_changed.connect(self._on_stats)
+
+    _TAP_INTERVAL_S = 0.5  # re-emit a sample frame at most twice a second
+
+    @Slot(QImage)
+    def _tap_frame(self, image: QImage) -> None:
+        now = time.monotonic()
+        if now - getattr(self, "_last_tap", 0.0) < self._TAP_INTERVAL_S:
+            return
+        self._last_tap = now
+        self.frame_tapped.emit(self._camera.index, image)
 
     # Public
 

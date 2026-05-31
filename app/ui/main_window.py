@@ -33,6 +33,7 @@ from app.core import camera_names
 from app.core.analyzer import SegmentAnalyzer
 from app.core.events import EventConfig
 from app.core.notifier import TelegramNotifier
+from app.core.live_detector import LiveDetector
 from app.core.recorder import RecorderSupervisor
 from app.ui.camera_names_dialog import CameraNamesDialog
 from app.ui.telegram_dialog import TelegramDialog
@@ -81,6 +82,17 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._notifier.set_cam_labels(self._cam_labels)
+
+        # Real-time alert tier: instant person/vehicle alerts off the live
+        # preview frames (separate from the delayed segment analyzer).
+        self._live_detector = LiveDetector(
+            settings.detection_model,
+            set(self._armed_cameras),
+            conf=settings.live_conf,
+            cooldown_s=settings.live_cooldown_s,
+            parent=self,
+        )
+        self._live_detector.live_alert.connect(self._on_live_alert)
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -539,8 +551,13 @@ class MainWindow(QMainWindow):
             self._armed_cameras.discard(cam_index)
         if self._analyzer is not None:
             self._analyzer.set_armed(set(self._armed_cameras))
+        self._live_detector.set_armed(set(self._armed_cameras))
         # refresh the armed count in the status bar without waiting for a scan
         self._status_ai.setText(self._ai_status_text(0, 0))
+
+    def _on_live_alert(self, cam_id: int, title: str, thumb_path: str) -> None:
+        label = self._cam_labels.get(cam_id, f"camera {cam_id}")
+        self._notifier.notify_live(label, title, thumb_path)
 
     def _on_event_extracted(self, clip) -> None:
         cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"

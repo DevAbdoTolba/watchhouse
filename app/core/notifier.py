@@ -334,6 +334,17 @@ class TelegramNotifier(QObject):
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
                                    tmap=tmap, folder=folder_s, cam=cam_id))
 
+    def notify_live(self, cam_label: str, title: str, thumb_path: str) -> None:
+        """Instant real-time alert (the live tier): fire-and-forget photo +
+        title, no event folder, no reply-drill (the evidence clip isn't ready
+        yet - that's the slower segment tier's job)."""
+        if not self.enabled:
+            return
+        when = time.strftime("%H:%M:%S")
+        caption = f"\U0001F534 NOW · {cam_label}: {title}  {when}"
+        thumb = Path(thumb_path) if thumb_path else None
+        self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb))
+
     @staticmethod
     def _what(clip) -> str:
         parts: list[str] = []

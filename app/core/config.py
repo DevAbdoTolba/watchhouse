@@ -92,6 +92,9 @@ class Settings:
     telegram_chat_id: str
     telegram_min_interval_s: float
     telegram_commands: bool        # interactive reply commands (poll getUpdates)
+    # Real-time alert tier (live preview frames; instant, separate from segments)
+    live_conf: float
+    live_cooldown_s: float
     # Presence-aware notifications (v0.4.20): send the recurring "still present"
     # pings. Off keeps only arrival + cleared. On by default (user wants pings).
     event_notify_ongoing: bool
@@ -145,6 +148,8 @@ class Settings:
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
             telegram_min_interval_s=float(os.environ.get("TELEGRAM_MIN_INTERVAL_SECONDS", "20")),
             telegram_commands=_truthy(os.environ.get("TELEGRAM_COMMANDS", "1")),
+            live_conf=float(os.environ.get("LIVE_CONF", "0.40")),
+            live_cooldown_s=float(os.environ.get("LIVE_COOLDOWN_SECONDS", "45")),
             event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
         )
         bus.info(
