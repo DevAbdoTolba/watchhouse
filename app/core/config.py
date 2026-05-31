@@ -159,7 +159,7 @@ class Settings:
             live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "1")),
             live_pre_roll_s=float(os.environ.get("LIVE_PRE_ROLL_SECONDS", "10")),
             live_post_roll_s=float(os.environ.get("LIVE_POST_ROLL_SECONDS", "20")),
-            live_autosend_clip=_truthy(os.environ.get("LIVE_AUTOSEND_CLIP", "1")),
+            live_autosend_clip=_truthy(os.environ.get("LIVE_AUTOSEND_CLIP", "0")),
             event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
         )
         bus.info(

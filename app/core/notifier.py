@@ -474,6 +474,12 @@ class TelegramPoller(QThread):
         # remaining angles; once all are sent we say "no more angles". In-memory
         # (session) state - fine, since replies happen interactively.
         self._sent_cams: dict[str, set[int]] = {}
+        # Pending live-reply requests: the user replied to a live alert whose
+        # clip wasn't encoded yet. We hold (cam, alert-time) and auto-deliver the
+        # moment the clip exists - no second reply needed, no wasted data.
+        self._pending: list[dict] = []
+
+    _PENDING_TTL_S = 1200.0  # stop waiting on a pending request after 20 min
 
     def set_labels(self, labels: dict) -> None:
         self._labels = dict(labels)
@@ -512,6 +518,11 @@ class TelegramPoller(QThread):
                     self._handle(upd)
                 except Exception as e:
                     bus.warn("TG", f"reply handling failed: {e!s}")
+            # After each poll cycle, see if any awaited clip has become ready.
+            try:
+                self._check_pending()
+            except Exception as e:
+                bus.warn("TG", f"pending check failed: {e!s}")
         bus.info("TG", "reply listener stopped")
 
     def _drain(self) -> int:
@@ -551,15 +562,17 @@ class TelegramPoller(QThread):
         the matching event clip if the segment tier has since extracted it, else
         tell the user it's still being prepared so they can reply again."""
         if entry.get("k") == "live" and not entry.get("f"):
-            resolved = self._resolve_live_event(int(entry.get("c", 0)),
-                                                 float(entry.get("t", 0.0)))
+            cam = int(entry.get("c", 0))
+            t = float(entry.get("t", 0.0))
+            resolved = self._resolve_live_event(cam, t)
             if resolved is None:
+                self._add_pending(cam, t)
                 api_send_message(
                     self._token, self._chat_id,
-                    "⏳ The clip for this moment is still being prepared "
-                    "(can take a few minutes). Reply again shortly and I'll send it.")
+                    "⏳ Clip isn't ready yet — I'll send it automatically the "
+                    "moment it is. No need to reply again.")
                 return
-            entry = {"f": str(resolved), "c": int(entry.get("c", 0)), "k": "thumb"}
+            entry = {"f": str(resolved), "c": cam, "k": "thumb"}
 
         folder = Path(entry.get("f", ""))
         if not folder.is_dir():
@@ -629,6 +642,33 @@ class TelegramPoller(QThread):
         return sorted(out)
 
     _LIVE_MATCH_WINDOW_S = 180.0  # a live alert and its event share a wall-clock
+
+    def _add_pending(self, cam: int, t: float) -> None:
+        """Remember a reply that's waiting for a not-yet-ready clip, so the poll
+        loop can auto-deliver it. De-duped per (cam, alert-time)."""
+        for p in self._pending:
+            if p["c"] == cam and abs(p["t"] - t) < 1.0:
+                return
+        self._pending.append({"c": cam, "t": t, "since": time.monotonic()})
+        bus.info("TG", f"queued auto-send for cam{cam} clip when ready")
+
+    def _check_pending(self) -> None:
+        """Each poll cycle: deliver any pending request whose clip now exists;
+        drop ones older than the TTL."""
+        if not self._pending:
+            return
+        still: list[dict] = []
+        for p in self._pending:
+            if time.monotonic() - p["since"] > self._PENDING_TTL_S:
+                bus.info("TG", f"pending cam{p['c']} clip timed out; dropping")
+                continue
+            folder = self._resolve_live_event(p["c"], p["t"])
+            if folder is None:
+                still.append(p)
+                continue
+            bus.info("TG", f"pending cam{p['c']} clip ready; auto-sending")
+            self._dispatch_reply({"f": str(folder), "c": p["c"], "k": "thumb"})
+        self._pending = still
 
     def _resolve_live_event(self, cam: int, t_epoch: float):
         """Find the event folder for a live alert: an event from `cam` whose
