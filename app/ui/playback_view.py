@@ -9,9 +9,11 @@ from PySide6.QtCore import QDate, QObject, QSize, Qt, QThread, QTimer, Signal, S
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QDesktopServices,
     QFont,
     QTextCharFormat,
 )
+from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QCheckBox,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QListView,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -805,13 +808,45 @@ class PlaybackView(QWidget):
         self._save_full_btn.setText("SAVE FULL CLIP")
         self._save_full_btn.setEnabled(self._current_session is not None)
         if ok:
+            detail = out_path
             try:
                 size_mb = Path(out_path).stat().st_size / (1024 * 1024)
                 bus.info("EVT", f"save-full-clip: done — {out_path} ({size_mb:.1f} MB)")
+                detail = f"{out_path}\n\n{size_mb:.1f} MB"
             except OSError:
                 bus.info("EVT", f"save-full-clip: done — {out_path}")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("Clip saved")
+            box.setText("Full clip saved successfully.")
+            box.setInformativeText(detail)
+            open_btn = box.addButton("Open folder", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Ok)
+            box.exec()
+            if box.clickedButton() is open_btn:
+                self._reveal_in_explorer(out_path)
         else:
             bus.warn("EVT", f"save-full-clip: export failed for {out_path}")
+            QMessageBox.warning(
+                self,
+                "Save failed",
+                "Could not save the full clip — no video was written.\n\n"
+                "The event may have no clip for its trigger camera, or ffmpeg "
+                "could not join the segments. See the admin log (console) for "
+                "the exact reason.",
+            )
+
+    def _reveal_in_explorer(self, path_str: str) -> None:
+        """Open the file browser with the saved file selected (Windows Explorer
+        /select), falling back to opening the containing folder."""
+        p = Path(path_str)
+        try:
+            import subprocess
+            subprocess.Popen(["explorer", f"/select,{p}"])
+            return
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.parent)))
 
     def _toggle_boxes(self) -> None:
         self._boxes_on = self._boxes_btn.isChecked()

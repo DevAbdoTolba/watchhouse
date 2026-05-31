@@ -64,7 +64,13 @@ def export_session(session: "EventSession", cam_id: int, out_path: Path) -> bool
     import shutil
     import tempfile
 
-    scratch = Path(tempfile.mkdtemp(prefix="wh_sess_"))
+    # Scratch on the DESTINATION drive so the final concat/move never crosses
+    # volumes (Windows os.replace fails C:->D:); also avoids copying gigabytes
+    # onto the system drive. out_path.parent was created just above.
+    try:
+        scratch = Path(tempfile.mkdtemp(prefix="wh_sess_", dir=str(out_path.parent)))
+    except OSError:
+        scratch = Path(tempfile.mkdtemp(prefix="wh_sess_"))
     try:
         copies: list[Path] = []
         for i, src in enumerate(parts):

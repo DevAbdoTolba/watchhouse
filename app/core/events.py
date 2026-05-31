@@ -23,6 +23,7 @@ This folder is never touched by the retention pruner.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -249,9 +250,14 @@ def _concat_clips(parts: list[Path], dst: Path) -> bool:
         try:
             if dst.exists():
                 dst.unlink()
-            parts[0].replace(dst)
+            # shutil.move, NOT Path.replace/os.replace: the scratch copy may sit
+            # on %TEMP% (C:) while the user saves onto the data drive (D:).
+            # os.replace raises WinError 17 across volumes and was silently
+            # swallowed below, so every single-part export wrote nothing.
+            shutil.move(str(parts[0]), str(dst))
             return True
-        except OSError:
+        except OSError as e:
+            bus.warn("EVT", f"concat(single): move {parts[0].name} -> {dst}: {e!s}")
             return False
     exe = _ffmpeg_path()
     if not exe:
