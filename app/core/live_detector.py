@@ -216,16 +216,21 @@ class LiveDetector(QObject):
 
     def __init__(self, model_path: Path, armed: set[int],
                  conf: float = 0.40, cooldown_s: float = 45.0,
-                 events_dir: Path | None = None,
+                 clips_dir: Path | None = None,
                  quick_clip_enabled: bool = True,
                  pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
+                 clip_retention: int = 5000,
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._detector = Detector(model_path, conf_threshold=conf)
         self._armed = set(armed)
         self._cooldown = max(1.0, cooldown_s)
-        self._events_dir = Path(events_dir) if events_dir else None
-        self._quick = quick_clip_enabled and self._events_dir is not None
+        # Quick clips live in their OWN dir (NOT events/), so the Events gallery -
+        # which scans events/ - stays pure segment-tier (4 cams, dynamic length,
+        # stitched). These are Telegram-only, reply-fetchable, retention-bounded.
+        self._clips_dir = Path(clips_dir) if clips_dir else None
+        self._clip_retention = max(1, int(clip_retention))
+        self._quick = quick_clip_enabled and self._clips_dir is not None
         self._pre_roll = max(1.0, pre_roll_s)
         self._post_roll = max(1.0, post_roll_s)
         self._pool = QThreadPool.globalInstance()
@@ -366,7 +371,7 @@ class LiveDetector(QObject):
         fps = max(1.0, min(30.0, len(frames) / span))
         jpegs = [b for _, b in frames]
         self._pool.start(_EncodeTask(
-            cam_id, jpegs, fps, self._events_dir,
+            cam_id, jpegs, fps, self._clips_dir,
             cap["pp"], cap["pv"], cap["pc"], cap["vc"],
             cap["start_at"], cap["thumb"], self._encode_signals,
         ))
@@ -376,5 +381,22 @@ class LiveDetector(QObject):
         if folder:
             bus.info("LIVE", f"cam{cam_id}: quick clip ready -> {folder}")
             self.quick_clip_ready.emit(cam_id, folder)
+            self._prune_live_clips()
         else:
             bus.warn("LIVE", f"cam{cam_id}: quick clip encode failed")
+
+    def _prune_live_clips(self) -> None:
+        """Keep only the most recent `clip_retention` quick-clip folders so the
+        live_clips dir stays bounded (they're Telegram-only, not gallery events)."""
+        if not self._clips_dir or not self._clips_dir.is_dir():
+            return
+        try:
+            folders = [p for p in self._clips_dir.glob("*/cam*/*") if p.is_dir()]
+            if len(folders) <= self._clip_retention:
+                return
+            folders.sort(key=lambda p: p.stat().st_mtime)
+            import shutil
+            for old in folders[:len(folders) - self._clip_retention]:
+                shutil.rmtree(old, ignore_errors=True)
+        except OSError as e:
+            bus.warn("LIVE", f"live-clip prune failed: {e!s}")

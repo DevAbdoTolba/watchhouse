@@ -70,6 +70,8 @@ class MainWindow(QMainWindow):
         self._cam_labels: dict[int, str] = {
             c.index: self._effective_cam_name(c) for c in self._cameras
         }
+        # Quick clips live here (NOT events/), so the gallery stays pure.
+        self._live_clips_dir = settings.recording_dir / "live_clips"
         # Off-device push alerts; no-op unless TELEGRAM_* is configured in .env.
         self._notifier = TelegramNotifier(
             settings.telegram_bot_token,
@@ -84,21 +86,25 @@ class MainWindow(QMainWindow):
             pre_roll_s=settings.live_pre_roll_s,
             post_roll_s=settings.live_post_roll_s,
             map_cap=settings.telegram_map_cap,
+            live_clips_dir=self._live_clips_dir,
             parent=self,
         )
         self._notifier.set_cam_labels(self._cam_labels)
 
         # Real-time alert tier: instant person/vehicle alerts off the live
         # preview frames (separate from the delayed segment analyzer).
+        # Quick clips go to recordings/live_clips (NOT events/), so the Events
+        # gallery stays pure segment-tier. They're Telegram-only + reply-fetchable.
         self._live_detector = LiveDetector(
             settings.detection_model,
             set(self._armed_cameras),
             conf=settings.live_conf,
             cooldown_s=settings.live_cooldown_s,
-            events_dir=settings.events_dir,
+            clips_dir=self._live_clips_dir,
             quick_clip_enabled=settings.live_quick_clip,
             pre_roll_s=settings.live_pre_roll_s,
             post_roll_s=settings.live_post_roll_s,
+            clip_retention=settings.telegram_map_cap,
             parent=self,
         )
         self._live_detector.live_alert.connect(self._on_live_alert)
@@ -574,12 +580,10 @@ class MainWindow(QMainWindow):
         self._notifier.notify_live(cam_id, label, title, thumb_path)
 
     def _on_quick_clip_ready(self, cam_id: int, folder: str) -> None:
-        # The ~30s pre-event-buffer clip just finished encoding. Surface it in
-        # the events gallery and (if enabled) push it to Telegram immediately.
-        try:
-            self._playback_view.note_new_event(None)
-        except Exception:
-            pass
+        # The ~30s quick clip finished encoding. It is NOT added to the Events
+        # gallery (that stays pure segment-tier: 4 cams, dynamic length). It's
+        # Telegram-only: reply to the alert photo to fetch it. Optionally
+        # auto-push it (off by default to save data).
         if self._settings.live_autosend_clip:
             label = self._cam_labels.get(cam_id, f"camera {cam_id}")
             self._notifier.send_quick_clip(cam_id, label, folder)

@@ -285,7 +285,8 @@ class TelegramNotifier(QObject):
                  notify_ongoing: bool = True, commands_enabled: bool = False,
                  state_dir=None, events_dir=None, recording_dir=None,
                  cam_ids=None, pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
-                 map_cap: int = 5000, parent: QObject | None = None) -> None:
+                 map_cap: int = 5000, live_clips_dir=None,
+                 parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._token = (token or "").strip()
         self._chat_id = (chat_id or "").strip()
@@ -293,6 +294,7 @@ class TelegramNotifier(QObject):
         self._notify_ongoing = notify_ongoing
         self._commands = commands_enabled
         self._events_dir = events_dir
+        self._live_clips_dir = live_clips_dir
         self._recording_dir = recording_dir
         self._cam_ids = list(cam_ids) if cam_ids else []
         self._pre_roll_s = pre_roll_s
@@ -347,6 +349,7 @@ class TelegramNotifier(QObject):
                 dict(self._cam_labels), self._events_dir,
                 recording_dir=self._recording_dir, cam_ids=self._cam_ids,
                 pre_roll_s=self._pre_roll_s, post_roll_s=self._post_roll_s,
+                live_clips_dir=self._live_clips_dir,
             )
             self._poller.start()
             bus.info("TG", "reply commands listening (replies + /help, /last)")
@@ -470,13 +473,15 @@ class TelegramPoller(QThread):
 
     def __init__(self, token: str, chat_id: str, tmap, cam_labels: dict,
                  events_dir, recording_dir=None, cam_ids=None,
-                 pre_roll_s: float = 10.0, post_roll_s: float = 20.0) -> None:
+                 pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
+                 live_clips_dir=None) -> None:
         super().__init__()
         self._token = token.strip()
         self._chat_id = str(chat_id).strip()
         self._map = tmap
         self._labels = dict(cam_labels or {})
         self._events_dir = events_dir
+        self._live_clips_dir = live_clips_dir
         self._recording_dir = Path(recording_dir) if recording_dir else None
         self._cam_ids = list(cam_ids) if cam_ids else []
         self._pre_roll_s = pre_roll_s
@@ -732,30 +737,35 @@ class TelegramPoller(QThread):
         self._pending = still
 
     def _resolve_live_event(self, cam: int, t_epoch: float):
-        """Find the event folder for a live alert: an event from `cam` whose
+        """Find the clip folder for a live alert: a clip from `cam` whose
         wall-clock start is within a few minutes of the alert time `t_epoch`.
-        Returns the folder Path, or None if the segment tier hasn't extracted it
-        yet (the user is told to reply again). Picks the nearest in time."""
-        if not self._events_dir or not t_epoch:
+        Scans BOTH the live-clips dir (the fast ~30s quick clip) and the events
+        dir (the later full segment event), picking the nearest in time. Returns
+        the folder Path, or None if neither exists yet."""
+        if not t_epoch:
             return None
-        try:
-            from app.core.event_library import scan_events
-            events = scan_events(Path(self._events_dir))
-        except Exception as e:
-            bus.warn("TG", f"live-resolve scan failed: {e!s}")
-            return None
+        from app.core.event_library import scan_events
+
         best = None
         best_dt = self._LIVE_MATCH_WINDOW_S
-        for ev in events:
-            if getattr(ev, "trigger_cam", 0) != cam:
+        for base in (self._live_clips_dir, self._events_dir):
+            if not base:
                 continue
-            start = getattr(ev, "start_at", None)
-            if start is None:
+            try:
+                events = scan_events(Path(base))
+            except Exception as e:
+                bus.warn("TG", f"live-resolve scan failed for {base}: {e!s}")
                 continue
-            dt = abs(start.timestamp() - t_epoch)
-            if dt <= best_dt:
-                best_dt = dt
-                best = ev.folder
+            for ev in events:
+                if getattr(ev, "trigger_cam", 0) != cam:
+                    continue
+                start = getattr(ev, "start_at", None)
+                if start is None:
+                    continue
+                dt = abs(start.timestamp() - t_epoch)
+                if dt <= best_dt:
+                    best_dt = dt
+                    best = ev.folder
         return best
 
     def _detecting_cams(self, folder: Path, fallback_cam: int) -> list[int]:
