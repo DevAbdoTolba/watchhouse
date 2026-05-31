@@ -359,9 +359,11 @@ class TimelineDrawer(QWidget):
 
         self._overview.viewport_changed.connect(self._detail.set_view_range)
         self._detail.seek_requested.connect(self.seek_requested.emit)
-        # Double-click either strip -> zoom all the way back out to the day.
+        # Double-click resets the zoom to the whole day - but ONLY on the
+        # overview minimap (the zone-zoom management strip). The detail strip is
+        # the playback scrubber: double-clicking there (e.g. a quick double-seek)
+        # must NOT yank the zoom back out, so it is deliberately not connected.
         self._overview.reset_requested.connect(self._reset_to_full_day)
-        self._detail.reset_requested.connect(self._reset_to_full_day)
         # Default: full-day view, all visible
         self._overview.set_viewport(0.0, _DAY_SECONDS, emit=False)
         self._detail.set_view_range(0.0, _DAY_SECONDS)
