@@ -35,6 +35,57 @@ _API = "https://api.telegram.org/bot{token}/{method}"
 _TIMEOUT_S = 20
 
 
+def _call(token: str, method: str, payload: dict) -> dict:
+    """Blocking JSON Bot API call. Used by the setup dialog's Detect / Test
+    buttons (short, user-initiated) - NOT on the event hot path."""
+    url = _API.format(token=token.strip(), method=method)
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def detect_chat_id(token: str) -> tuple[str | None, str]:
+    """Resolve a chat id from the bot's recent updates. The user messages the
+    bot once, then we read getUpdates. Returns (chat_id, human_message)."""
+    try:
+        result = _call(token, "getUpdates", {"timeout": 0})
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return None, "Invalid bot token (Telegram returned 401)."
+        return None, f"Telegram error: HTTP {e.code}"
+    except Exception as e:
+        return None, f"Could not reach Telegram: {e!s}"
+    if not result.get("ok"):
+        return None, f"Telegram rejected the request: {result.get('description', '?')}"
+    updates = result.get("result", [])
+    for upd in reversed(updates):  # newest first
+        msg = upd.get("message") or upd.get("channel_post") or {}
+        chat = msg.get("chat", {})
+        cid = chat.get("id")
+        if cid is not None:
+            who = chat.get("title") or chat.get("username") or chat.get("first_name") or ""
+            return str(cid), f"Found chat {cid}{f' ({who})' if who else ''}."
+    return None, ("No recent messages. Open Telegram, send your bot any message "
+                  "(or add it to your group and send one), then click Detect again.")
+
+
+def send_test(token: str, chat_id: str) -> tuple[bool, str]:
+    """Send a one-off confirmation message. Returns (ok, human_message)."""
+    try:
+        result = _call(token, "sendMessage",
+                       {"chat_id": chat_id.strip(),
+                        "text": "✅ Watchhouse is linked. Alerts will arrive here."})
+    except urllib.error.HTTPError as e:
+        return False, f"Telegram error: HTTP {e.code}"
+    except Exception as e:
+        return False, f"Could not reach Telegram: {e!s}"
+    if result.get("ok"):
+        return True, "Test message sent — check your Telegram."
+    return False, f"Telegram rejected it: {result.get('description', '?')}"
+
+
 def _mask(token: str) -> str:
     """123456789:AAB...xyz -> 1234...xyz so logs never leak the full token."""
     if not token:
@@ -136,6 +187,24 @@ class TelegramNotifier(QObject):
             bus.info("TG", f"Telegram alerts enabled (bot {_mask(self._token)}, chat {self._chat_id})")
         else:
             bus.info("TG", "Telegram alerts off (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env)")
+
+    def configure(self, token: str, chat_id: str,
+                  min_interval_s: float | None = None,
+                  notify_ongoing: bool | None = None) -> None:
+        """Apply new credentials/settings to the running notifier without a
+        restart (called by the Telegram setup dialog after it saves to .env)."""
+        self._token = (token or "").strip()
+        self._chat_id = (chat_id or "").strip()
+        if min_interval_s is not None:
+            self._min_interval = max(0.0, min_interval_s)
+        if notify_ongoing is not None:
+            self._notify_ongoing = notify_ongoing
+        self._last_sent.clear()  # fresh creds -> don't carry old debounce state
+        self.enabled = bool(self._token and self._chat_id)
+        if self.enabled:
+            bus.info("TG", f"Telegram reconfigured (bot {_mask(self._token)}, chat {self._chat_id})")
+        else:
+            bus.info("TG", "Telegram alerts disabled (token/chat cleared)")
 
     def notify(self, clip, cam_label: str | None = None) -> None:
         """Queue an alert for an extracted event. Best-effort, non-blocking.

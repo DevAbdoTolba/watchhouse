@@ -3,6 +3,8 @@ toggleable bottom-docked admin log console."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -21,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from app import __version__
 from app.core.cameras import default_cameras
-from app.core.config import Settings, persist_dvr_ip, with_dvr_ip
+from app.core.config import Settings, persist_dvr_ip, persist_env_values, with_dvr_ip
 from app.core.discovery import DiscoveryResult, DiscoveryWorker
 from app.core.ip_cache import load as load_ip_cache, record_hit as record_ip_hit
 from app.core.log import bus
@@ -33,6 +35,7 @@ from app.core.events import EventConfig
 from app.core.notifier import TelegramNotifier
 from app.core.recorder import RecorderSupervisor
 from app.ui.camera_names_dialog import CameraNamesDialog
+from app.ui.telegram_dialog import TelegramDialog
 from app.ui.camera_tile import CameraTile
 from app.ui.grid_focus import GridFocus
 from app.ui.console_panel import ConsolePanel
@@ -191,6 +194,8 @@ class MainWindow(QMainWindow):
         system_menu.addSeparator()
         self._act_rename   = system_menu.addAction("Rename Cameras…")
         self._act_rename.setToolTip("Set a friendly name per camera (alerts + tiles)")
+        self._act_telegram = system_menu.addAction("Telegram Alerts…")
+        self._act_telegram.setToolTip("Link a Telegram bot for off-device push alerts")
         system_menu.addSeparator()
         act_wipe = system_menu.addAction("Wipe Data…")
         act_wipe.setToolTip("Delete recordings, caches and stored data (PIN-gated)")
@@ -199,6 +204,7 @@ class MainWindow(QMainWindow):
         self._act_discover.triggered.connect(self._run_discovery)
         self._act_pbprobe.triggered.connect(self._run_pbprobe)
         self._act_rename.triggered.connect(self._open_rename_dialog)
+        self._act_telegram.triggered.connect(self._open_telegram_dialog)
         act_wipe.triggered.connect(self._open_wipe_dialog)
 
         self._system_btn.setMenu(system_menu)
@@ -217,6 +223,25 @@ class MainWindow(QMainWindow):
     def _open_wipe_dialog(self) -> None:
         dlg = WipeDialog(self._settings, expected_pin="123", parent=self)
         dlg.exec()
+
+    def _open_telegram_dialog(self) -> None:
+        dlg = TelegramDialog(
+            self._settings.telegram_bot_token,
+            self._settings.telegram_chat_id,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        token, chat_id = dlg.values()
+        persist_env_values(self._settings, {
+            "TELEGRAM_BOT_TOKEN": token,
+            "TELEGRAM_CHAT_ID": chat_id,
+        })
+        self._settings = replace(
+            self._settings, telegram_bot_token=token, telegram_chat_id=chat_id
+        )
+        self._notifier.configure(token, chat_id)
+        bus.info("APP", "Telegram settings updated")
 
     def _open_rename_dialog(self) -> None:
         dlg = CameraNamesDialog(self._cameras, dict(self._camera_names), parent=self)

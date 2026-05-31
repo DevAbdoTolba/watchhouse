@@ -257,38 +257,54 @@ def with_dvr_ip(settings: "Settings", new_ip: str) -> "Settings":
     return replace(settings, dvr_ip=new_ip)
 
 
-def persist_dvr_ip(settings: "Settings", new_ip: str) -> bool:
-    """Write `DVR_IP=<new_ip>` into the .env that was loaded at startup.
+def _default_env_path() -> Path:
+    """Where to create a brand-new .env when none was loaded at startup: next to
+    the exe when frozen, else the project root in dev."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / ".env"
+    return Path(__file__).resolve().parents[2] / ".env"
 
-    Returns True on success. If no .env was loaded (env_path is None) or
-    the file is missing, returns False and logs the reason. Other lines
-    in the file are preserved verbatim.
+
+def persist_env_values(settings: "Settings", values: dict[str, str]) -> bool:
+    """Update (or append) one or more KEY=value lines in the loaded .env,
+    preserving every other line verbatim. Creates the .env at a sensible
+    default location if none was loaded yet. Returns True on success.
+
+    Secrets in `values` are written as-is to the (gitignored) .env but never
+    logged here — callers log a masked summary if needed.
     """
     path = settings.env_path
-    if path is None or not path.is_file():
-        bus.warn("CFG", f"cannot persist DVR_IP; no writable .env (env_path={path})")
-        return False
+    if path is None:
+        path = _default_env_path()
+        bus.info("CFG", f"no .env was loaded; creating {path}")
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     except OSError as e:
         bus.error("CFG", f"failed to read .env for update: {e!s}")
         return False
-    found = False
+
+    remaining = dict(values)
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("#") or "=" not in stripped:
             continue
-        key, _ = stripped.split("=", 1)
-        if key.strip() == "DVR_IP":
-            lines[i] = f"DVR_IP={new_ip}"
-            found = True
-            break
-    if not found:
-        lines.append(f"DVR_IP={new_ip}")
+        key = stripped.split("=", 1)[0].strip()
+        if key in remaining:
+            lines[i] = f"{key}={remaining.pop(key)}"
+    for key, val in remaining.items():  # keys not already present -> append
+        lines.append(f"{key}={val}")
+
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError as e:
         bus.error("CFG", f"failed to write .env: {e!s}")
         return False
-    bus.info("CFG", f"persisted DVR_IP={new_ip} to {path}")
+    bus.info("CFG", f"persisted {', '.join(values)} to {path}")
     return True
+
+
+def persist_dvr_ip(settings: "Settings", new_ip: str) -> bool:
+    """Write `DVR_IP=<new_ip>` into the loaded .env. Thin wrapper around
+    persist_env_values kept for existing callers."""
+    return persist_env_values(settings, {"DVR_IP": new_ip})
