@@ -69,7 +69,7 @@ class Settings:
     recording_enabled: bool
     recording_dir: Path
     recording_stream: str          # "sub" | "main"
-    recording_segment_minutes: int    # default 15
+    recording_segment_minutes: int    # default 3 (fast evidence/angle availability)
     recording_retention_minutes: int  # default 90 (1.5h sliding window)
     # Detection (v0.4+)
     detection_enabled: bool
@@ -136,7 +136,7 @@ class Settings:
             recording_enabled=_truthy(os.environ.get("RECORDING_ENABLED", "1")),
             recording_dir=rec_dir,
             recording_stream=_norm(os.environ.get("RECORDING_STREAM", "sub")),
-            recording_segment_minutes=int(os.environ.get("RECORDING_SEGMENT_MINUTES", "15")),
+            recording_segment_minutes=int(os.environ.get("RECORDING_SEGMENT_MINUTES", "3")),
             recording_retention_minutes=_retention_minutes(),
             detection_enabled=_truthy(os.environ.get("DETECTION_ENABLED", "1")),
             detection_conf=float(os.environ.get("DETECTION_CONF", "0.35")),
@@ -247,7 +247,7 @@ def _event_hold_timeout_s() -> float:
     event never references an already-pruned segment."""
     if (raw := os.environ.get("EVENT_HOLD_TIMEOUT_SECONDS")) is not None:
         return max(60.0, float(raw))
-    seg_min = int(os.environ.get("RECORDING_SEGMENT_MINUTES", "15"))
+    seg_min = int(os.environ.get("RECORDING_SEGMENT_MINUTES", "3"))
     hold = max(5.0, 2 * seg_min) * 60.0
     retention_s = _retention_minutes() * 60.0
     # Never let a hold outlive the rolling buffer; leave a one-segment margin.

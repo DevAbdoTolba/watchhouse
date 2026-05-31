@@ -44,7 +44,8 @@ More invasive; revisit only if the buffered-frame clip looks too low-quality.)
 ### Notification latency — segment tier (secondary, after the live tier)
 The live tier (v0.4.35) handles "someone is here NOW". The segment/evidence
 tier is still 0–15 min late by design (a segment is only analyzed after it
-closes; default `RECORDING_SEGMENT_MINUTES=15`). That's fine for evidence, but
+closes; default `RECORDING_SEGMENT_MINUTES=3` as of v0.4.47, down from 15, so
+the 4-cam evidence event and "other angles" reply land in ~3 min worst-case). But
 if we want the *clip* sooner too, options cheapest-first:
 - **Shorter segments** (e.g. 3–5 min) — one-line config; more files + passes.
 - **Analyze the open segment on a timer** — needs fragmented-mp4 recording to
