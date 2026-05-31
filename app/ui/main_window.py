@@ -79,6 +79,10 @@ class MainWindow(QMainWindow):
             commands_enabled=settings.telegram_commands,
             state_dir=settings.env_path,
             events_dir=settings.events_dir,
+            recording_dir=settings.recording_dir,
+            cam_ids=[c.index for c in self._cameras],
+            pre_roll_s=settings.live_pre_roll_s,
+            post_roll_s=settings.live_post_roll_s,
             parent=self,
         )
         self._notifier.set_cam_labels(self._cam_labels)

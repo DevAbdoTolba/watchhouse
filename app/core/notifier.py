@@ -26,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThread, QThreadPool
@@ -282,7 +283,8 @@ class TelegramNotifier(QObject):
 
     def __init__(self, token: str, chat_id: str, min_interval_s: float = 20.0,
                  notify_ongoing: bool = True, commands_enabled: bool = False,
-                 state_dir=None, events_dir=None,
+                 state_dir=None, events_dir=None, recording_dir=None,
+                 cam_ids=None, pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._token = (token or "").strip()
@@ -291,6 +293,10 @@ class TelegramNotifier(QObject):
         self._notify_ongoing = notify_ongoing
         self._commands = commands_enabled
         self._events_dir = events_dir
+        self._recording_dir = recording_dir
+        self._cam_ids = list(cam_ids) if cam_ids else []
+        self._pre_roll_s = pre_roll_s
+        self._post_roll_s = post_roll_s
         self._cam_labels: dict[int, str] = {}
         self._last_sent: dict[int, float] = {}
         self._pool = QThreadPool.globalInstance()
@@ -339,6 +345,8 @@ class TelegramNotifier(QObject):
             self._poller = TelegramPoller(
                 self._token, self._chat_id, self._map,
                 dict(self._cam_labels), self._events_dir,
+                recording_dir=self._recording_dir, cam_ids=self._cam_ids,
+                pre_roll_s=self._pre_roll_s, post_roll_s=self._post_roll_s,
             )
             self._poller.start()
             bus.info("TG", "reply commands listening (replies + /help, /last)")
@@ -461,13 +469,18 @@ class TelegramPoller(QThread):
     """
 
     def __init__(self, token: str, chat_id: str, tmap, cam_labels: dict,
-                 events_dir) -> None:
+                 events_dir, recording_dir=None, cam_ids=None,
+                 pre_roll_s: float = 10.0, post_roll_s: float = 20.0) -> None:
         super().__init__()
         self._token = token.strip()
         self._chat_id = str(chat_id).strip()
         self._map = tmap
         self._labels = dict(cam_labels or {})
         self._events_dir = events_dir
+        self._recording_dir = Path(recording_dir) if recording_dir else None
+        self._cam_ids = list(cam_ids) if cam_ids else []
+        self._pre_roll_s = pre_roll_s
+        self._post_roll_s = post_roll_s
         self._stop = False
         # Per-event progressive angle delivery: folder -> set of cams already
         # sent. First reply sends the detecting camera(s); the next sends the
@@ -612,9 +625,13 @@ class TelegramPoller(QThread):
         so the caller marks exactly the angles that actually went out."""
         path = folder / f"cam{cam}.mp4"
         if not path.is_file():
-            api_send_message(self._token, self._chat_id,
-                             f"No clip for {self._label(cam)}.")
-            return False
+            # Live quick-clips only hold the detecting camera. The other angles
+            # exist in the recordings - cut them on demand for the SAME wall-clock
+            # window so a reply still delivers all four angles.
+            if not self._cut_sibling_clip(folder, cam):
+                api_send_message(self._token, self._chat_id,
+                                 f"No footage for {self._label(cam)} at this time.")
+                return False
         caption = f"\U0001F3A5 {self._label(cam)}"
         try:
             result = api_send_video(self._token, self._chat_id, caption, path)
@@ -633,13 +650,57 @@ class TelegramPoller(QThread):
         return False
 
     def _all_cams(self, folder: Path) -> list[int]:
-        """Sorted camera numbers that have a clip in this event folder."""
-        out: list[int] = []
-        for mp4 in sorted(folder.glob("cam*.mp4")):
+        """Every camera angle available for this event. Includes clips already
+        in the folder PLUS all configured cameras (their angles can be cut on
+        demand from the recordings) - so a reply to a live event, whose folder
+        holds only the detecting camera, still offers all four angles."""
+        present: set[int] = set()
+        for mp4 in folder.glob("cam*.mp4"):
             m = re.match(r"cam(\d+)\.mp4", mp4.name, re.IGNORECASE)
             if m:
-                out.append(int(m.group(1)))
-        return sorted(out)
+                present.add(int(m.group(1)))
+        # Other angles are only producible when we know where recordings live.
+        extra = set(self._cam_ids) if self._recording_dir else set()
+        return sorted(present | extra)
+
+    def _cut_sibling_clip(self, folder: Path, cam: int) -> bool:
+        """Cut camera `cam`'s clip from the recordings over the event's window,
+        writing it into the event folder so it's cached for future replies.
+        Returns True if a non-empty clip was produced."""
+        if not self._recording_dir:
+            return False
+        meta_path = folder / "event.json"
+        if not meta_path.is_file():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            start_at = datetime.fromisoformat(meta["start_at"])
+            dur = float(meta.get("duration_s", 0.0)) or (
+                self._pre_roll_s + self._post_roll_s)
+        except (ValueError, OSError, KeyError, TypeError) as e:
+            bus.warn("TG", f"sibling cut: bad event.json ({e!s})")
+            return False
+
+        from app.core.events import _cut_clip, _segment_covering
+
+        # The live clip's footage starts ~pre_roll before the detection moment;
+        # mirror that window on the sibling so the angles line up.
+        window_start = start_at - timedelta(seconds=self._pre_roll_s)
+        cam_dir = Path(self._recording_dir) / f"cam{cam}"
+        found = _segment_covering(cam_dir, window_start)
+        if found is None:
+            bus.warn("TG", f"sibling cut: no segment covering {window_start:%H:%M:%S} for cam{cam}")
+            return False
+        seg_start, src = found
+        offset = (window_start - seg_start).total_seconds()
+        if offset < 0 or offset > 17 * 60:
+            bus.warn("TG", f"sibling cut: offset {offset:.0f}s out of range for cam{cam}")
+            return False
+        out = folder / f"cam{cam}.mp4"
+        ok = _cut_clip(src, out, offset, dur)
+        if ok:
+            bus.info("TG", f"sibling cut: cam{cam} {dur:.1f}s @ {window_start:%H:%M:%S}")
+        return ok
 
     _LIVE_MATCH_WINDOW_S = 180.0  # a live alert and its event share a wall-clock
 
