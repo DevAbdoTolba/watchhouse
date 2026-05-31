@@ -1,63 +1,21 @@
-# Secrets
-.env
-.env.local
-
-# Local app state (cached DVR addresses, custom camera names, etc.)
-.cctv-known-dvrs.json
-.cctv-camera-names.json
-
-# Archived previous experiment (kept on disk for our reference only,
-# never published to the public repo).
-.old/
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Virtual environments
-.venv/
-venv/
-env/
-
 # Build artifacts
 build/
 dist/
 *.spec
-*.exe.manifest
+*.pyc
+__pycache__/
+*.egg-info/
 
-# PyInstaller
-*.pyz
+# Virtual envs
+.venv/
+venv/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# Local caches / secrets / runtime state (never commit)
+.env
+.cctv-known-dvrs.json
+.cctv-camera-names.json
+.cctv-ip-cache.json
+.cctv-telegram-map.json
 
-# OS
-Thumbs.db
-Desktop.ini
-.DS_Store
-
-# Logs
-*.log
-logs/
-
-# Local dev scratch (debug helpers, screenshots)
-_*.py
-_*.ps1
-shot*.png
-screenshot*.png
-
-# Runtime data (event store, recorded clips)
-data/
+# Recordings & events (local data)
 recordings/
-clips/
-
-# Skill manager (keep skill source, ignore caches if any)
-.agents/.cache/
