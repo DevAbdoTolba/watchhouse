@@ -55,7 +55,8 @@ class _NetTask(QRunnable):
 class TelegramDialog(QDialog):
     """Edit Telegram credentials. Call values() after exec() == Accepted."""
 
-    def __init__(self, token: str, chat_id: str, parent=None) -> None:
+    def __init__(self, token: str, chat_id: str,
+                 commands_enabled: bool = True, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("WipeDialog")  # reuse shared dialog styling
         self.setWindowTitle("Telegram Alerts")
@@ -126,6 +127,13 @@ class TelegramDialog(QDialog):
         cr.addWidget(self._detect_btn)
         v.addWidget(chat_row)
 
+        # Interactive reply commands toggle.
+        self._commands_chk = QCheckBox(
+            "Enable reply commands  (reply to an alert photo → that camera's "
+            "clip; reply to a clip → the other angles; /help, /last)", self)
+        self._commands_chk.setChecked(commands_enabled)
+        v.addWidget(self._commands_chk)
+
         # Status line (Detect/Test feedback).
         self._status = QLabel("", self)
         self._status.setObjectName("DialogSubtitle")
@@ -188,6 +196,8 @@ class TelegramDialog(QDialog):
             self._chat_edit.setText(chat_id)
         self._set_busy(False, message)
 
-    def values(self) -> tuple[str, str]:
-        """(token, chat_id), trimmed."""
-        return self._token_edit.text().strip(), self._chat_edit.text().strip()
+    def values(self) -> tuple[str, str, bool]:
+        """(token, chat_id, commands_enabled); token/chat trimmed."""
+        return (self._token_edit.text().strip(),
+                self._chat_edit.text().strip(),
+                self._commands_chk.isChecked())

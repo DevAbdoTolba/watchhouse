@@ -75,8 +75,12 @@ class MainWindow(QMainWindow):
             settings.telegram_chat_id,
             min_interval_s=settings.telegram_min_interval_s,
             notify_ongoing=settings.event_notify_ongoing,
+            commands_enabled=settings.telegram_commands,
+            state_dir=settings.env_path,
+            events_dir=settings.events_dir,
             parent=self,
         )
+        self._notifier.set_cam_labels(self._cam_labels)
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -228,19 +232,22 @@ class MainWindow(QMainWindow):
         dlg = TelegramDialog(
             self._settings.telegram_bot_token,
             self._settings.telegram_chat_id,
+            commands_enabled=self._settings.telegram_commands,
             parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        token, chat_id = dlg.values()
+        token, chat_id, commands = dlg.values()
         persist_env_values(self._settings, {
             "TELEGRAM_BOT_TOKEN": token,
             "TELEGRAM_CHAT_ID": chat_id,
+            "TELEGRAM_COMMANDS": "1" if commands else "0",
         })
         self._settings = replace(
-            self._settings, telegram_bot_token=token, telegram_chat_id=chat_id
+            self._settings, telegram_bot_token=token, telegram_chat_id=chat_id,
+            telegram_commands=commands,
         )
-        self._notifier.configure(token, chat_id)
+        self._notifier.configure(token, chat_id, commands_enabled=commands)
         bus.info("APP", "Telegram settings updated")
 
     def _open_rename_dialog(self) -> None:
@@ -254,6 +261,7 @@ class MainWindow(QMainWindow):
         }
         for tile, cam in zip(self._tiles, self._cameras):
             tile.set_display_name(self._cam_labels[cam.index])
+        self._notifier.set_cam_labels(self._cam_labels)
         bus.info("APP", "camera names updated")
 
     @Slot(int, str)
@@ -274,6 +282,7 @@ class MainWindow(QMainWindow):
         }
         for tile, c in zip(self._tiles, self._cameras):
             tile.set_display_name(self._cam_labels[c.index])
+        self._notifier.set_cam_labels(self._cam_labels)
         bus.info("APP", f"cam{cam_index} renamed -> {self._cam_labels[cam_index]}")
 
     def _set_mode(self, mode: str) -> None:
