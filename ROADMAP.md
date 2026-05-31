@@ -6,6 +6,39 @@ section.
 
 ## Next up
 
+### Notification latency — the big one (currently 0–15 min late)
+**Symptom:** a long gap between someone appearing live and the Telegram alert.
+**Root cause (confirmed, NOT "only the last 2 minutes"):** the SegmentAnalyzer
+only sees a recording segment *after it finalizes*. Segments are 15 minutes
+(default `RECORDING_SEGMENT_MINUTES=15`), so a person who walks in at 12:01 sits
+in a segment that doesn't close until 12:15 — only then is it analyzed,
+extracted, and pushed. Delay therefore ranges 0–15 min depending on where in
+the segment the activity falls. (The ~2-minute number is the *cap-split* of a
+long presence into chunks; it is not how much footage gets analyzed — the whole
+segment is.) This is the same inherent lag noted under the live urgent-alert
+tier below.
+
+Options, cheapest first (can stack):
+- **Shorter segments** — drop to e.g. 3–5 min. One-line config change; cuts
+  worst-case delay to the segment length. Cost: more files + more frequent
+  analyzer passes; re-measure CPU and the 90-min window file count.
+- **Analyze the open (in-progress) segment on a timer** — don't wait for the
+  rollover; periodically run detection on the tail of the *currently recording*
+  file. Medium effort; keeps long segments while cutting latency.
+- **Live urgent-alert tier** (see below) — the real fix for "someone is here
+  *now*": detect on the live preview frames, independent of recording. Instant
+  alert; the segment tier still produces the evidence clip with margins.
+Decision needed: quick win (shorter segments now) vs. build the live tier.
+
+### Timeline overlay: mark detection spans on the scrub/timeline bar
+In playback, paint the regions where bounding boxes exist directly onto the
+timeline/scrub bar (e.g. tick marks or a coloured band over the seconds that
+have detections), so the user can see at a glance *where in the clip* the
+activity is and jump straight to it — instead of scrubbing blindly. Source data
+already exists: each event's `tracks` (clip-relative `t` per box set) drives the
+overlay today; reuse those timestamps to shade the bar. Pairs with the existing
+double-click-to-reset-zoom timeline.
+
 ### Per-camera event arming (UI) + all-camera event bundling
 Today every camera triggers events all the time. Two coupled changes:
 
