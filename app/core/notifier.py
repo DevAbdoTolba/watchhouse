@@ -41,8 +41,8 @@ _POLL_TIMEOUT_S = 10             # getUpdates long-poll; bounds shutdown latency
 
 _HELP_TEXT = (
     "🏠 Watchhouse bot\n"
-    "• Reply to an alert photo → get that camera's clip.\n"
-    "• Reply to a clip → get the other camera angles.\n"
+    "• Reply to an alert photo → get the detecting camera's clip.\n"
+    "• Reply again → the next camera angles (until all are sent).\n"
     "• /last → the newest event.\n"
     "• /help → this message."
 )
@@ -400,6 +400,11 @@ class TelegramPoller(QThread):
         self._labels = dict(cam_labels or {})
         self._events_dir = events_dir
         self._stop = False
+        # Per-event progressive angle delivery: folder -> set of cams already
+        # sent. First reply sends the detecting camera(s); the next sends the
+        # remaining angles; once all are sent we say "no more angles". In-memory
+        # (session) state - fine, since replies happen interactively.
+        self._sent_cams: dict[str, set[int]] = {}
 
     def set_labels(self, labels: dict) -> None:
         self._labels = dict(labels)
@@ -468,55 +473,96 @@ class TelegramPoller(QThread):
             self._handle_command(text)
 
     def _dispatch_reply(self, entry: dict) -> None:
+        """Progressive angle delivery. First reply to an event -> its detecting
+        camera(s). Next reply -> the remaining angles. Once every available
+        angle has been sent -> 'no more angles'. State is per event folder, so
+        replying to the thumbnail OR to any sent clip advances the same event."""
         folder = Path(entry.get("f", ""))
-        cam = int(entry.get("c", 0))
-        kind = entry.get("k", "")
         if not folder.is_dir():
             api_send_message(self._token, self._chat_id,
                              "That event's clips are no longer available.")
             return
-        if kind == "thumb":
-            self._send_clip(folder, cam)
-        elif kind == "video":
-            others = self._other_cams(folder, cam)
-            if not others:
-                api_send_message(self._token, self._chat_id,
-                                 "No other camera angles for this event.")
-                return
-            for n in others:
-                if self._stop:
-                    break
-                self._send_clip(folder, n)
+        all_cams = self._all_cams(folder)
+        if not all_cams:
+            api_send_message(self._token, self._chat_id,
+                             "No clips available for this event.")
+            return
 
-    def _send_clip(self, folder: Path, cam: int) -> None:
+        key = str(folder)
+        sent = self._sent_cams.setdefault(key, set())
+        if not sent:
+            # First reply: the camera(s) that detected the event. Falls back to
+            # the entry's own camera (the trigger) when no list is recorded.
+            detecting = [c for c in self._detecting_cams(folder, int(entry.get("c", 0)))
+                         if c in all_cams]
+            to_send = detecting or all_cams[:1]
+        else:
+            to_send = [c for c in all_cams if c not in sent]
+
+        if not to_send:
+            api_send_message(self._token, self._chat_id,
+                             "✅ No more angles — all cameras sent for this event.")
+            return
+
+        for n in to_send:
+            if self._stop:
+                break
+            if self._send_clip(folder, n):
+                sent.add(n)
+
+    def _send_clip(self, folder: Path, cam: int) -> bool:
+        """Send one camera's clip. Returns True only when Telegram accepted it,
+        so the caller marks exactly the angles that actually went out."""
         path = folder / f"cam{cam}.mp4"
         if not path.is_file():
             api_send_message(self._token, self._chat_id,
                              f"No clip for {self._label(cam)}.")
-            return
+            return False
         caption = f"\U0001F3A5 {self._label(cam)}"
         try:
             result = api_send_video(self._token, self._chat_id, caption, path)
         except Exception as e:
             api_send_message(self._token, self._chat_id,
                              f"Could not send {self._label(cam)}: {e!s}")
-            return
+            return False
         if result.get("ok"):
             self._map.record(_message_id(result), str(folder), cam, "video")
             bus.info("TG", f"sent clip cam{cam} ({folder.name})")
-        else:
-            api_send_message(
-                self._token, self._chat_id,
-                f"Could not send {self._label(cam)}: {result.get('description', '?')}",
-            )
+            return True
+        api_send_message(
+            self._token, self._chat_id,
+            f"Could not send {self._label(cam)}: {result.get('description', '?')}",
+        )
+        return False
 
-    def _other_cams(self, folder: Path, cam: int) -> list[int]:
+    def _all_cams(self, folder: Path) -> list[int]:
+        """Sorted camera numbers that have a clip in this event folder."""
         out: list[int] = []
         for mp4 in sorted(folder.glob("cam*.mp4")):
             m = re.match(r"cam(\d+)\.mp4", mp4.name, re.IGNORECASE)
-            if m and int(m.group(1)) != cam:
+            if m:
                 out.append(int(m.group(1)))
-        return out
+        return sorted(out)
+
+    def _detecting_cams(self, folder: Path, fallback_cam: int) -> list[int]:
+        """The camera(s) that actually detected the event - sent first on the
+        initial reply. Today that's the single trigger camera; once all-camera
+        bundling records multiple detecting cams in event.json (key
+        'detecting_cams'), they all come through here. Falls back to the
+        recorded trigger_cam, then to the message's own camera."""
+        meta_path = folder / "event.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                det = meta.get("detecting_cams")
+                if isinstance(det, list) and det:
+                    return [int(c) for c in det]
+                trig = meta.get("trigger_cam")
+                if trig is not None:
+                    return [int(trig)]
+            except (ValueError, OSError, TypeError):
+                pass
+        return [fallback_cam] if fallback_cam else []
 
     def _label(self, cam: int) -> str:
         return self._labels.get(cam) or f"camera {cam}"
