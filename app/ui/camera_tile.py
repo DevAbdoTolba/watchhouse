@@ -253,6 +253,9 @@ class CameraTile(QFrame):
     double_clicked = Signal(int, bool)
     # (camera index, raw_text) - emitted when the user renames inline.
     rename_committed = Signal(int, str)
+    # (camera index, QImage) - throttled live-frame tap (~2 fps) feeding the
+    # real-time alert tier. Emitted by _tap_frame.
+    frame_tapped = Signal(int, QImage)
 
     def __init__(self, camera: Camera, settings: Settings, default_stream: str, parent=None) -> None:
         super().__init__(parent)

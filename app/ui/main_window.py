@@ -338,6 +338,10 @@ class MainWindow(QMainWindow):
             tile = CameraTile(cam, settings, default_stream, parent=wrap)
             tile.event_arm_toggled.connect(self._on_arm_toggled)
             tile.rename_committed.connect(self._on_tile_renamed)
+            # Feed live preview frames to the real-time alert tier (throttled in
+            # the tile to ~2 fps). Without this the LiveDetector gets no frames
+            # and never fires — the whole instant-alert path is dead.
+            tile.frame_tapped.connect(self._live_detector.submit)
             tiles.append(tile)
             row, col = divmod(i, 2)
             grid.addWidget(tile, row, col)
