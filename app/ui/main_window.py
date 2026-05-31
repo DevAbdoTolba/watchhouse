@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
             cam_ids=[c.index for c in self._cameras],
             pre_roll_s=settings.live_pre_roll_s,
             post_roll_s=settings.live_post_roll_s,
+            map_cap=settings.telegram_map_cap,
             parent=self,
         )
         self._notifier.set_cam_labels(self._cam_labels)

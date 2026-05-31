@@ -285,7 +285,7 @@ class TelegramNotifier(QObject):
                  notify_ongoing: bool = True, commands_enabled: bool = False,
                  state_dir=None, events_dir=None, recording_dir=None,
                  cam_ids=None, pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
-                 parent: QObject | None = None) -> None:
+                 map_cap: int = 5000, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._token = (token or "").strip()
         self._chat_id = (chat_id or "").strip()
@@ -300,7 +300,7 @@ class TelegramNotifier(QObject):
         self._cam_labels: dict[int, str] = {}
         self._last_sent: dict[int, float] = {}
         self._pool = QThreadPool.globalInstance()
-        self._map = TelegramMap(state_dir)
+        self._map = TelegramMap(state_dir, cap=map_cap)
         self._poller: "TelegramPoller | None" = None
         self.enabled = bool(self._token and self._chat_id)
         if self.enabled:

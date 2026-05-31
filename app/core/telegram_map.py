@@ -19,7 +19,7 @@ from pathlib import Path
 from app.core.log import bus
 
 _FILENAME = ".cctv-telegram-map.json"
-_CAP = 500
+_DEFAULT_CAP = 5000  # how many recent sent messages stay replyable
 
 
 class TelegramMap:
@@ -29,9 +29,10 @@ class TelegramMap:
     poller uses kind to decide what a reply should fetch.
     """
 
-    def __init__(self, env_path: Path | None) -> None:
+    def __init__(self, env_path: Path | None, cap: int = _DEFAULT_CAP) -> None:
         base = env_path.parent if env_path else Path.cwd()
         self._path = base / _FILENAME
+        self._cap = max(1, int(cap))
         self._lock = threading.Lock()
         self._data: dict[str, dict] = {}
         self._load()
@@ -63,7 +64,7 @@ class TelegramMap:
             if t:
                 entry["t"] = float(t)  # epoch secs; live alerts use it to find the clip
             self._data[str(message_id)] = entry
-            overflow = len(self._data) - _CAP
+            overflow = len(self._data) - self._cap
             if overflow > 0:  # drop oldest insertions (dict preserves order)
                 for key in list(self._data.keys())[:overflow]:
                     self._data.pop(key, None)

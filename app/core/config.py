@@ -92,6 +92,7 @@ class Settings:
     telegram_chat_id: str
     telegram_min_interval_s: float
     telegram_commands: bool        # interactive reply commands (poll getUpdates)
+    telegram_map_cap: int          # how many recent sent messages stay replyable
     # Real-time alert tier (live preview frames; instant, separate from segments)
     live_conf: float
     live_cooldown_s: float
@@ -154,6 +155,7 @@ class Settings:
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
             telegram_min_interval_s=float(os.environ.get("TELEGRAM_MIN_INTERVAL_SECONDS", "20")),
             telegram_commands=_truthy(os.environ.get("TELEGRAM_COMMANDS", "1")),
+            telegram_map_cap=max(1, int(os.environ.get("TELEGRAM_MAP_CAP", "5000"))),
             live_conf=float(os.environ.get("LIVE_CONF", "0.40")),
             live_cooldown_s=float(os.environ.get("LIVE_COOLDOWN_SECONDS", "45")),
             live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "1")),
