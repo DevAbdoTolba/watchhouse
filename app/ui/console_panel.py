@@ -35,20 +35,25 @@ _LEVEL_COLOR = {
 }
 
 # Filter categories, in display order. "All" is special-cased.
-_CATEGORIES = ["All", "AI / Events", "Recording", "Cameras", "Playback", "System"]
+_CATEGORIES = ["All", "AI / Events", "Telegram", "Recording", "Cameras",
+               "Playback", "System"]
 
 
 def _category(source: str) -> str:
     s = source.upper()
-    if s in ("AI", "EVT"):
+    # LIVE = real-time detections; they belong with AI/EVT, not buried in System.
+    if s in ("AI", "EVT", "LIVE"):
         return "AI / Events"
+    if s == "TG":
+        return "Telegram"
     if s == "REC":
         return "Recording"
     if s.startswith("CAM"):
         return "Cameras"
-    if s.startswith("PB"):
+    # PB* (PBPROBE), the PLAYBACK source, and clip IMPORT are all playback-side.
+    if s.startswith("PB") or s.startswith("PLAY") or s == "IMPORT":
         return "Playback"
-    return "System"  # CFG, APP, PROBE, CACHE, anything else
+    return "System"  # CFG, APP, PROBE, DISC, CACHE, WIPE, anything else
 
 
 class ConsolePanel(QDockWidget):
