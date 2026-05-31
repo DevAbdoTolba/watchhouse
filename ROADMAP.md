@@ -65,6 +65,44 @@ already exists: each event's `tracks` (clip-relative `t` per box set) drives the
 overlay today; reuse those timestamps to shade the bar. Pairs with the existing
 double-click-to-reset-zoom timeline.
 
+### Telegram bot as a remote control panel
+Let the bot configure/operate the system, not just receive alerts. Commands
+gated to the linked chat id (same security model as today). Wanted:
+- **Arm/disarm live detection per camera** - start or stop event detection on a
+  specific camera (or all) from chat (e.g. `/arm cam3`, `/disarm cam1`). Mirrors
+  the planned per-camera arming UI; both should write the same `.env`/state.
+- **Export a time range and have it delivered** - ask the bot for footage over a
+  given window, and a period/schedule for delivery, and it sends the clip(s)
+  back. Two shapes: one-shot ("send cam2 07:00-07:10 today") and recurring
+  ("send cam2 07:00-07:10 every morning"). Pairs with the playback range cutout
+  export and the pinned-recording feature below.
+
+### Permanent (pinned) recording beyond the rolling window
+Today everything lives in the ~90-min sliding window and ages out. Want the
+ability to mark a chosen time range to be **kept permanently** (not temporary)
+and stay accessible. A pinned range is exempt from the retention pruner (like
+the existing protected `imported/` and `events/` roots, but user-chosen on the
+timeline). Promote/demote flow: highlight a temp clip -> pin it -> it becomes
+permanent. (Storage note: pinned ranges grow unbounded - surface their total
+size somewhere.)
+
+### Timeline color layering (z-ordered overlays)
+Three stacked layers on the timeline, painted back-to-front so the front layer
+always wins visually:
+1. **Back - orange:** the temporary rolling recording (the normal tape, as it
+   is now).
+2. **Middle - blue:** ranges chosen to be kept permanently (the pinned feature
+   above). Promote an orange temp clip (highlight it) and it flips to blue.
+3. **Front - green:** spans where extracted events are available, overlaid on
+   top so they're always visible over orange/blue.
+Z-order matters: orange is the base, blue sits over orange, green sits on top of
+everything.
+
+### Hover peek thumbnail (YouTube-style scrub preview)
+On hover over the timeline, show a small peek thumbnail of that moment/event -
+like YouTube's seek-bar preview. Needs cheap per-position thumbnails: reuse the
+event thumbs where they exist, sample segment frames elsewhere.
+
 ### Per-camera event arming (UI) + all-camera event bundling
 Today every camera triggers events all the time. Two coupled changes:
 
