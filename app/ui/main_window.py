@@ -403,6 +403,8 @@ class MainWindow(QMainWindow):
         for tile in self._tiles:
             tile.shutdown(wait_ms=2000)
         self._playback_view.shutdown()
+        if self._notifier is not None:
+            self._notifier.shutdown()  # stop the Telegram reply listener thread
         if self._probe is not None and self._probe.isRunning():
             self._probe.wait(2000)
         if self._discovery is not None and self._discovery.isRunning():
