@@ -6,29 +6,54 @@ section.
 
 ## Next up
 
-### Notification latency — the big one (currently 0–15 min late)
-**Symptom:** a long gap between someone appearing live and the Telegram alert.
-**Root cause (confirmed, NOT "only the last 2 minutes"):** the SegmentAnalyzer
-only sees a recording segment *after it finalizes*. Segments are 15 minutes
-(default `RECORDING_SEGMENT_MINUTES=15`), so a person who walks in at 12:01 sits
-in a segment that doesn't close until 12:15 — only then is it analyzed,
-extracted, and pushed. Delay therefore ranges 0–15 min depending on where in
-the segment the activity falls. (The ~2-minute number is the *cap-split* of a
-long presence into chunks; it is not how much footage gets analyzed — the whole
-segment is.) This is the same inherent lag noted under the live urgent-alert
-tier below.
+### Quick-clip tier + reply-wait machinery (phase 2 of real-time)
+The instant photo alert shipped (v0.4.35 live tier). Phase 2 = get a short
+video to the phone seconds after the photo, without the 15-min wait.
 
-Options, cheapest first (can stack):
-- **Shorter segments** — drop to e.g. 3–5 min. One-line config change; cuts
-  worst-case delay to the segment length. Cost: more files + more frequent
-  analyzer passes; re-measure CPU and the 90-min window file count.
-- **Analyze the open (in-progress) segment on a timer** — don't wait for the
-  rollover; periodically run detection on the tail of the *currently recording*
-  file. Medium effort; keeps long segments while cutting latency.
-- **Live urgent-alert tier** (see below) — the real fix for "someone is here
-  *now*": detect on the live preview frames, independent of recording. Instant
-  alert; the segment tier still produces the evidence clip with margins.
-Decision needed: quick win (shorter segments now) vs. build the live tier.
+**Three-tier model (decided):**
+1. ⚡ Live tier (DONE v0.4.35): instant photo + title off live frames.
+2. 🎬 Quick clip (THIS): a short ~10 s video, seconds after the photo.
+3. 🐢 Evidence tier (unchanged): 15-min segments → full event clips w/ margins.
+
+**Why NOT 10-second recording segments** (the rejected approach): 4 cams ×
+90-min window ÷ 10 s = ~2,160 files always on disk + the analyzer waking every
+10 s per cam (CPU thrash, worse on `main`). And "read the unfinished clip"
+does not work with our mp4s — the moov index is written only on close
+(`+faststart`), so an open segment isn't readable until it finalizes. So tiny
+segments give neither instant video nor a free lunch.
+
+**Better source for the quick clip:** the live tier already holds decoded
+frames. Keep a small rolling buffer (e.g. last ~10 s at ~6 fps) per armed
+camera; on a live trigger, encode that buffer to mp4 (cv2.VideoWriter) — gives
+pre-roll + a real ~10 s clip, no extra files, no open-mp4 problem. (Alternative
+if we want true recorded quality: switch the recorder to fragmented mp4
+`+frag_keyframe+empty_moov` so the open segment IS readable, then cut from it.
+More invasive; revisit only if the buffered-frame clip looks too low-quality.)
+
+**Reply-wait machinery (on top of the quick clip):**
+- The instant photo is sent immediately and is replyable.
+- If the user replies *before* the clip is ready: reply "⏳ clip is being
+  prepared, ~30 s — I'll send it the moment it's done", set a pending flag
+  keyed to that event, and auto-send the clip when encoding finishes.
+- If they reply *after* it's ready: send immediately (no wait).
+- Same pattern for "other angles": if they reply to a clip while the sibling
+  angles are still encoding, hold + auto-send when ready.
+- Needs a small pending-request table in telegram_map (event -> chat msg
+  awaiting a not-yet-ready clip) and a "clip ready" callback from the encoder.
+
+### Notification latency — segment tier (secondary, after the live tier)
+The live tier (v0.4.35) handles "someone is here NOW". The segment/evidence
+tier is still 0–15 min late by design (a segment is only analyzed after it
+closes; default `RECORDING_SEGMENT_MINUTES=15`). That's fine for evidence, but
+if we want the *clip* sooner too, options cheapest-first:
+- **Shorter segments** (e.g. 3–5 min) — one-line config; more files + passes.
+- **Analyze the open segment on a timer** — needs fragmented-mp4 recording to
+  read the in-progress file (see quick-clip note above).
+Note: the 90-min window and 15-min segment were never tuned scientifically.
+15-min = a comfortable buffer; segment length and analysis time are INDEPENDENT
+(a short segment does not rush analysis — face/name passes can take as long as
+they need on a closed clip). So future face/name work argues for a slow second
+pass, not bigger segments.
 
 ### Timeline overlay: mark detection spans on the scrub/timeline bar
 In playback, paint the regions where bounding boxes exist directly onto the
