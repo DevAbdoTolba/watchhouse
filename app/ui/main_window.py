@@ -90,9 +90,14 @@ class MainWindow(QMainWindow):
             set(self._armed_cameras),
             conf=settings.live_conf,
             cooldown_s=settings.live_cooldown_s,
+            events_dir=settings.events_dir,
+            quick_clip_enabled=settings.live_quick_clip,
+            pre_roll_s=settings.live_pre_roll_s,
+            post_roll_s=settings.live_post_roll_s,
             parent=self,
         )
         self._live_detector.live_alert.connect(self._on_live_alert)
+        self._live_detector.quick_clip_ready.connect(self._on_quick_clip_ready)
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -562,6 +567,17 @@ class MainWindow(QMainWindow):
     def _on_live_alert(self, cam_id: int, title: str, thumb_path: str) -> None:
         label = self._cam_labels.get(cam_id, f"camera {cam_id}")
         self._notifier.notify_live(cam_id, label, title, thumb_path)
+
+    def _on_quick_clip_ready(self, cam_id: int, folder: str) -> None:
+        # The ~30s pre-event-buffer clip just finished encoding. Surface it in
+        # the events gallery and (if enabled) push it to Telegram immediately.
+        try:
+            self._playback_view.note_new_event(None)
+        except Exception:
+            pass
+        if self._settings.live_autosend_clip:
+            label = self._cam_labels.get(cam_id, f"camera {cam_id}")
+            self._notifier.send_quick_clip(cam_id, label, folder)
 
     def _on_event_extracted(self, clip) -> None:
         cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"

@@ -95,6 +95,12 @@ class Settings:
     # Real-time alert tier (live preview frames; instant, separate from segments)
     live_conf: float
     live_cooldown_s: float
+    # Instant quick-clip (pre-event ring buffer): a ~30s clip from buffered live
+    # frames, saved + pushed in seconds instead of waiting for a segment.
+    live_quick_clip: bool
+    live_pre_roll_s: float
+    live_post_roll_s: float
+    live_autosend_clip: bool       # push the quick clip to Telegram when ready
     # Presence-aware notifications (v0.4.20): send the recurring "still present"
     # pings. Off keeps only arrival + cleared. On by default (user wants pings).
     event_notify_ongoing: bool
@@ -150,6 +156,10 @@ class Settings:
             telegram_commands=_truthy(os.environ.get("TELEGRAM_COMMANDS", "1")),
             live_conf=float(os.environ.get("LIVE_CONF", "0.40")),
             live_cooldown_s=float(os.environ.get("LIVE_COOLDOWN_SECONDS", "45")),
+            live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "1")),
+            live_pre_roll_s=float(os.environ.get("LIVE_PRE_ROLL_SECONDS", "10")),
+            live_post_roll_s=float(os.environ.get("LIVE_POST_ROLL_SECONDS", "20")),
+            live_autosend_clip=_truthy(os.environ.get("LIVE_AUTOSEND_CLIP", "1")),
             event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
         )
         bus.info(

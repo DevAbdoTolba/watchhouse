@@ -243,6 +243,40 @@ class _SendTask(QRunnable):
             bus.warn("TG", f"send failed: {e!s}")
 
 
+class _QuickClipTask(QRunnable):
+    """Upload the just-encoded quick clip (the detecting camera's mp4) and
+    record it so a reply can fetch the other angles. Off the UI thread."""
+
+    def __init__(self, token: str, chat_id: str, cam_id: int, cam_label: str,
+                 folder: str, tmap) -> None:
+        super().__init__()
+        self._token = token
+        self._chat_id = chat_id
+        self._cam_id = cam_id
+        self._label = cam_label
+        self._folder = folder
+        self._map = tmap
+
+    def run(self) -> None:
+        try:
+            path = Path(self._folder) / f"cam{self._cam_id}.mp4"
+            if not path.is_file():
+                return
+            caption = f"\U0001F3A5 {self._label} — clip ready"
+            result = api_send_video(self._token, self._chat_id, caption, path)
+            if result.get("ok"):
+                bus.info("TG", f"quick clip sent (cam{self._cam_id})")
+                if self._map is not None:
+                    self._map.record(_message_id(result), self._folder,
+                                     self._cam_id, "video")
+            else:
+                bus.warn("TG", f"quick clip rejected: {result.get('description', '?')}")
+        except urllib.error.HTTPError as e:
+            bus.warn("TG", f"quick clip send failed: HTTP {e.code}")
+        except Exception as e:
+            bus.warn("TG", f"quick clip send failed: {e!s}")
+
+
 class TelegramNotifier(QObject):
     """Dispatches event alerts to Telegram. Construct once; call notify()."""
 
@@ -369,6 +403,16 @@ class TelegramNotifier(QObject):
         tmap = self._map if self._commands else None
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
                                    tmap=tmap, cam=cam_id, kind="live", t=time.time()))
+
+    def send_quick_clip(self, cam_id: int, cam_label: str, folder: str) -> None:
+        """Auto-push the instant quick clip (the ~30s pre-event-buffer video)
+        the moment it's encoded, so the family gets the video in seconds. The
+        message is recorded so a reply can pull other angles later."""
+        if not self.enabled:
+            return
+        self._pool.start(_QuickClipTask(self._token, self._chat_id, cam_id,
+                                        cam_label, folder,
+                                        self._map if self._commands else None))
 
     @staticmethod
     def _what(clip) -> str:
