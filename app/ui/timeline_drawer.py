@@ -231,6 +231,7 @@ class _OverviewStrip(_Strip):
     HANDLE_PX = 6
 
     viewport_changed = Signal(float, float)  # start_s, end_s
+    user_zoomed = Signal()                    # user grabbed/recentred the viewport
 
     def __init__(self, cameras: list[int], parent: QWidget | None = None) -> None:
         super().__init__(cameras, parent)
@@ -318,6 +319,9 @@ class _OverviewStrip(_Strip):
     def mousePressEvent(self, ev: QMouseEvent) -> None:  # noqa: N802
         if ev.button() != Qt.MouseButton.LeftButton:
             return
+        # Any deliberate grab/pan/recenter here is the user taking over the
+        # zoom; tell the drawer so it stops auto-fitting on the next refresh.
+        self.user_zoomed.emit()
         x = ev.position().x()
         handle = self._handle_at(x)
         if handle is not None:
@@ -357,25 +361,39 @@ class TimelineDrawer(QWidget):
         v.addWidget(self._overview)
         v.addWidget(self._detail)
 
+        # Auto-fit state: the timeline opens zoomed to the range that actually
+        # has recordings (the rolling window), not an empty 24h day. We stop
+        # auto-fitting once the user manually zooms/pans, and resume on a day
+        # change or a double-click reset.
+        self._day: _date = datetime.now().date()
+        self._segments_by_cam: dict[int, list[Clip]] = {}
+        self._user_zoomed = False
+
         self._overview.viewport_changed.connect(self._detail.set_view_range)
+        self._overview.user_zoomed.connect(self._on_user_zoomed)
         self._detail.seek_requested.connect(self.seek_requested.emit)
-        # Double-click resets the zoom to the whole day - but ONLY on the
-        # overview minimap (the zone-zoom management strip). The detail strip is
-        # the playback scrubber: double-clicking there (e.g. a quick double-seek)
-        # must NOT yank the zoom back out, so it is deliberately not connected.
-        self._overview.reset_requested.connect(self._reset_to_full_day)
-        # Default: full-day view, all visible
+        # Double-click on the overview minimap re-fits the viewport to the
+        # recorded range (not the empty whole day). The detail strip is the
+        # playback scrubber, so its double-click is deliberately not connected.
+        self._overview.reset_requested.connect(self._reset_to_recordings)
+        # Default until segments arrive: full-day view, all visible.
         self._overview.set_viewport(0.0, _DAY_SECONDS, emit=False)
         self._detail.set_view_range(0.0, _DAY_SECONDS)
 
     # Pass-through API
     def set_day(self, day: _date) -> None:
+        if day != self._day:
+            # New day selected -> resume auto-fitting for that day's clips.
+            self._user_zoomed = False
+        self._day = day
         self._overview.set_day(day)
         self._detail.set_day(day)
 
     def set_segments(self, by_cam: dict[int, list[Clip]]) -> None:
+        self._segments_by_cam = by_cam
         self._overview.set_segments(by_cam)
         self._detail.set_segments(by_cam)
+        self._maybe_autofit()
 
     def set_selected_cams(self, selected: set[int]) -> None:
         self._overview.set_selected(selected)
@@ -385,6 +403,52 @@ class TimelineDrawer(QWidget):
         self._overview.set_playhead(when)
         self._detail.set_playhead(when)
 
-    def _reset_to_full_day(self) -> None:
-        """Zoom the viewport back out to the entire day (double-click)."""
-        self._overview.set_viewport(0.0, _DAY_SECONDS)
+    def _on_user_zoomed(self) -> None:
+        """User grabbed/panned the viewport; stop auto-fitting so a refresh
+        doesn't yank their chosen zoom away."""
+        self._user_zoomed = True
+
+    def _reset_to_recordings(self) -> None:
+        """Double-click: re-fit to the recorded range (or the whole day if
+        nothing is recorded) and resume auto-fitting."""
+        self._user_zoomed = False
+        self._maybe_autofit(force=True)
+
+    def _recorded_span_s(self) -> tuple[float, float] | None:
+        """Min start .. max end (seconds-of-day) across all clips on the
+        current day, or None if there are none."""
+        lo = _DAY_SECONDS
+        hi = 0.0
+        found = False
+        for clips in self._segments_by_cam.values():
+            for clip in clips:
+                if clip.start_at.date() != self._day:
+                    continue
+                s_start = _seconds_of_time(clip.start_at)
+                end_dt = clip.end_at_estimated
+                s_end = (
+                    _DAY_SECONDS if end_dt.date() != self._day
+                    else _seconds_of_time(end_dt)
+                )
+                lo = min(lo, s_start)
+                hi = max(hi, s_end)
+                found = True
+        return (lo, hi) if found else None
+
+    def _maybe_autofit(self, force: bool = False) -> None:
+        """Zoom the viewport to the recorded range unless the user has taken
+        over the zoom. A little padding keeps the first/last clip off the edge."""
+        if self._user_zoomed and not force:
+            return
+        span = self._recorded_span_s()
+        if span is None:
+            if force:
+                self._overview.set_viewport(0.0, _DAY_SECONDS)
+            return
+        lo, hi = span
+        pad = max(60.0, (hi - lo) * 0.05)
+        start = max(0.0, lo - pad)
+        end = min(_DAY_SECONDS, hi + pad)
+        if end - start < _MIN_VIEWPORT_SECONDS:
+            end = min(_DAY_SECONDS, start + _MIN_VIEWPORT_SECONDS)
+        self._overview.set_viewport(start, end)
