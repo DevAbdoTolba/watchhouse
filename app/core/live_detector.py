@@ -219,7 +219,7 @@ class LiveDetector(QObject):
                  clips_dir: Path | None = None,
                  quick_clip_enabled: bool = True,
                  pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
-                 clip_retention: int = 5000,
+                 max_clip_s: float = 30.0, clip_retention: int = 5000,
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._detector = Detector(model_path, conf_threshold=conf)
@@ -232,7 +232,10 @@ class LiveDetector(QObject):
         self._clip_retention = max(1, int(clip_retention))
         self._quick = quick_clip_enabled and self._clips_dir is not None
         self._pre_roll = max(1.0, pre_roll_s)
+        # post_roll is now the grace AFTER movement stops; max_clip is the hard
+        # ceiling so a long presence is one capped clip, not an endless one.
         self._post_roll = max(1.0, post_roll_s)
+        self._max_clip = max(self._post_roll + 1.0, max_clip_s)
         self._pool = QThreadPool.globalInstance()
         self._signals = _Signals()
         self._signals.done.connect(self._on_done)
@@ -255,7 +258,8 @@ class LiveDetector(QObject):
             bus.info("LIVE", f"real-time alerts ready (conf={conf:g}, "
                              f"cooldown={self._cooldown:g}s, armed={sorted(self._armed)}, "
                              f"quick_clip={'on' if self._quick else 'off'} "
-                             f"pre={self._pre_roll:g}s post={self._post_roll:g}s)")
+                             f"pre={self._pre_roll:g}s grace={self._post_roll:g}s "
+                             f"max={self._max_clip:g}s dynamic)")
 
     def set_armed(self, armed: set[int]) -> None:
         self._armed = set(armed)
@@ -299,10 +303,15 @@ class LiveDetector(QObject):
         cutoff = now - self._pre_roll
         while buf and buf[0][0] < cutoff:
             buf.popleft()
-        # Feed an in-flight capture too (post-roll accumulation).
+        # Feed an in-flight capture too. While movement keeps extending `until`
+        # the frames accumulate; once movement stops and `until` passes, the
+        # next frame closes the clip -> dynamic length that matches the movement.
         cap = self._capturing.get(cam_id)
-        if cap is not None and now <= cap["until"]:
-            cap["jpegs"].append((now, jpeg))
+        if cap is not None:
+            if now <= cap["until"]:
+                cap["jpegs"].append((now, jpeg))
+            else:
+                self._finalize_capture(cam_id)
 
     @Slot(int, object, object)
     def _on_done(self, cam_id: int, frame, dets) -> None:
@@ -317,8 +326,24 @@ class LiveDetector(QObject):
         if not persons and not vehicles:
             return
         now = time.monotonic()
+
+        # Dynamic clip: while movement keeps being seen, hold the clip open -
+        # push the close time to grace (post_roll) after THIS sighting, capped at
+        # max_clip total. This runs even during the photo cooldown, so a long
+        # presence grows ONE clip instead of a fixed window or a flood of clips.
+        cap = self._capturing.get(cam_id)
+        if cap is not None:
+            cap["until"] = min(now + self._post_roll,
+                               cap["start_mono"] + self._max_clip)
+            cap["pp"] = max(cap["pp"], persons)
+            cap["pv"] = max(cap["pv"], sum(vehicles.values()))
+            cap["pc"] = max(cap["pc"],
+                            max((d.confidence for d in dets if d.is_person), default=0.0))
+            cap["vc"] = max(cap["vc"],
+                            max((d.confidence for d in dets if d.is_vehicle), default=0.0))
+
         if now - self._last_alert.get(cam_id, 0.0) < self._cooldown:
-            return  # debounce a lingering subject into one alert
+            return  # debounce a lingering subject into one alert (photo + new clip)
         self._last_alert[cam_id] = now
 
         title = _title(persons, vehicles)
@@ -346,8 +371,9 @@ class LiveDetector(QObject):
         pc = max((d.confidence for d in dets if d.is_person), default=0.0)
         vc = max((d.confidence for d in dets if d.is_vehicle), default=0.0)
         self._capturing[cam_id] = {
-            "jpegs": pre,                       # (t, jpeg); post-roll appends here
-            "until": now + self._post_roll,
+            "jpegs": pre,                       # (t, jpeg); movement appends here
+            "start_mono": now,                  # monotonic start, for the max cap
+            "until": now + self._post_roll,     # extended on each fresh sighting
             "start_at": datetime.now(),
             "pp": persons,
             "pv": sum(vehicles.values()),
@@ -355,8 +381,11 @@ class LiveDetector(QObject):
             "vc": vc,
             "thumb": thumb_bgr,
         }
-        QTimer.singleShot(int(self._post_roll * 1000),
-                          lambda c=cam_id: self._finalize_capture(c))
+        # Normal close is frame-driven (in _buffer_frame, when movement stops and
+        # `until` passes). This timer is only a backstop so a stalled live stream
+        # can't leave the clip open forever.
+        backstop_ms = int((self._max_clip + self._post_roll + 1.0) * 1000)
+        QTimer.singleShot(backstop_ms, lambda c=cam_id: self._finalize_capture(c))
 
     def _finalize_capture(self, cam_id: int) -> None:
         cap = self._capturing.pop(cam_id, None)

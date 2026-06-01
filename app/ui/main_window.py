@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
             quick_clip_enabled=settings.live_quick_clip,
             pre_roll_s=settings.live_pre_roll_s,
             post_roll_s=settings.live_post_roll_s,
+            max_clip_s=settings.live_max_clip_s,
             clip_retention=settings.telegram_map_cap,
             parent=self,
         )

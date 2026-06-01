@@ -101,7 +101,8 @@ class Settings:
     # frames, saved + pushed in seconds instead of waiting for a segment.
     live_quick_clip: bool
     live_pre_roll_s: float
-    live_post_roll_s: float
+    live_post_roll_s: float        # grace kept AFTER movement stops (dynamic clip)
+    live_max_clip_s: float         # hard ceiling on a dynamic quick clip
     live_autosend_clip: bool       # push the quick clip to Telegram when ready
     # Presence-aware notifications (v0.4.20): send the recurring "still present"
     # pings. Off keeps only arrival + cleared. On by default (user wants pings).
@@ -160,9 +161,10 @@ class Settings:
             telegram_lang=os.environ.get("TELEGRAM_LANG", "en").strip().lower(),
             live_conf=float(os.environ.get("LIVE_CONF", "0.40")),
             live_cooldown_s=float(os.environ.get("LIVE_COOLDOWN_SECONDS", "45")),
-            live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "0")),
+            live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "1")),
             live_pre_roll_s=float(os.environ.get("LIVE_PRE_ROLL_SECONDS", "2")),
-            live_post_roll_s=float(os.environ.get("LIVE_POST_ROLL_SECONDS", "8")),
+            live_post_roll_s=float(os.environ.get("LIVE_POST_ROLL_SECONDS", "3")),
+            live_max_clip_s=float(os.environ.get("LIVE_MAX_CLIP_SECONDS", "30")),
             live_autosend_clip=_truthy(os.environ.get("LIVE_AUTOSEND_CLIP", "0")),
             event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
         )
