@@ -33,6 +33,7 @@ from PySide6.QtCore import QObject, QRunnable, QThread, QThreadPool
 
 from app.core.log import bus
 from app.core.telegram_map import TelegramMap
+from app.core import telegram_text as tg
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _TIMEOUT_S = 20
@@ -285,9 +286,10 @@ class TelegramNotifier(QObject):
                  notify_ongoing: bool = True, commands_enabled: bool = False,
                  state_dir=None, events_dir=None, recording_dir=None,
                  cam_ids=None, pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
-                 map_cap: int = 5000, live_clips_dir=None,
+                 map_cap: int = 5000, live_clips_dir=None, lang: str = "en",
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
+        self._lang = tg.norm(lang)
         self._token = (token or "").strip()
         self._chat_id = (chat_id or "").strip()
         self._min_interval = max(0.0, min_interval_s)
@@ -320,9 +322,12 @@ class TelegramNotifier(QObject):
     def configure(self, token: str, chat_id: str,
                   min_interval_s: float | None = None,
                   notify_ongoing: bool | None = None,
-                  commands_enabled: bool | None = None) -> None:
+                  commands_enabled: bool | None = None,
+                  lang: str | None = None) -> None:
         """Apply new credentials/settings to the running notifier without a
         restart (called by the Telegram setup dialog after it saves to .env)."""
+        if lang is not None:
+            self._lang = tg.norm(lang)
         self._token = (token or "").strip()
         self._chat_id = (chat_id or "").strip()
         if min_interval_s is not None:
@@ -349,7 +354,7 @@ class TelegramNotifier(QObject):
                 dict(self._cam_labels), self._events_dir,
                 recording_dir=self._recording_dir, cam_ids=self._cam_ids,
                 pre_roll_s=self._pre_roll_s, post_roll_s=self._post_roll_s,
-                live_clips_dir=self._live_clips_dir,
+                live_clips_dir=self._live_clips_dir, lang=self._lang,
             )
             self._poller.start()
             bus.info("TG", "reply commands listening (replies + /help, /last)")
@@ -409,7 +414,7 @@ class TelegramNotifier(QObject):
         if not self.enabled:
             return
         when = time.strftime("%H:%M:%S")
-        caption = f"\U0001F534 NOW · {cam_label}: {title}  {when}"
+        caption = tg.t(self._lang, "alert_live", where=cam_label, when=when)
         thumb = Path(thumb_path) if thumb_path else None
         tmap = self._map if self._commands else None
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
@@ -444,19 +449,22 @@ class TelegramNotifier(QObject):
             return f"{int(round(s))}s"
         return f"{int(round(s / 60.0))}m"
 
-    @classmethod
-    def _caption(cls, clip, cam_label: str | None) -> str:
+    def _caption(self, clip, cam_label: str | None) -> str:
         where = cam_label or f"camera {getattr(clip, 'cam_id', '?')}"
         when = getattr(clip, "start_at", None)
         when_s = when.strftime("%H:%M:%S") if when is not None else ""
         state = getattr(clip, "presence_state", "single")
         secs = getattr(clip, "presence_seconds", 0.0)
         if state == "ongoing":
-            return f"⏱ {where}: still present (~{cls._mins(secs)})  {when_s}"
+            return tg.t(self._lang, "ongoing", where=where,
+                        dur=tg.dur(self._lang, secs), when=when_s)
         if state == "ended":
-            return f"✅ {where}: cleared after {cls._mins(secs)}  {when_s}"
+            return tg.t(self._lang, "ended", where=where,
+                        dur=tg.dur(self._lang, secs), when=when_s)
         # started / single -> a normal arrival alert.
-        return f"\U0001F6A8 {where}: {cls._what(clip)} detected  {when_s}"
+        who = tg.who(self._lang, getattr(clip, "peak_person", 0),
+                     getattr(clip, "peak_vehicle", 0))
+        return tg.t(self._lang, "alert", where=where, who=who, when=when_s)
 
 
 class TelegramPoller(QThread):
@@ -474,8 +482,9 @@ class TelegramPoller(QThread):
     def __init__(self, token: str, chat_id: str, tmap, cam_labels: dict,
                  events_dir, recording_dir=None, cam_ids=None,
                  pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
-                 live_clips_dir=None) -> None:
+                 live_clips_dir=None, lang: str = "en") -> None:
         super().__init__()
+        self._lang = tg.norm(lang)
         self._token = token.strip()
         self._chat_id = str(chat_id).strip()
         self._map = tmap
@@ -585,22 +594,20 @@ class TelegramPoller(QThread):
             resolved = self._resolve_live_event(cam, t)
             if resolved is None:
                 self._add_pending(cam, t)
-                api_send_message(
-                    self._token, self._chat_id,
-                    "⏳ Clip isn't ready yet — I'll send it automatically the "
-                    "moment it is. No need to reply again.")
+                api_send_message(self._token, self._chat_id,
+                                 tg.t(self._lang, "preparing"))
                 return
             entry = {"f": str(resolved), "c": cam, "k": "thumb"}
 
         folder = Path(entry.get("f", ""))
         if not folder.is_dir():
             api_send_message(self._token, self._chat_id,
-                             "That event's clips are no longer available.")
+                             tg.t(self._lang, "expired"))
             return
         all_cams = self._all_cams(folder)
         if not all_cams:
             api_send_message(self._token, self._chat_id,
-                             "No clips available for this event.")
+                             tg.t(self._lang, "no_clips"))
             return
 
         key = str(folder)
@@ -616,7 +623,7 @@ class TelegramPoller(QThread):
 
         if not to_send:
             api_send_message(self._token, self._chat_id,
-                             "✅ No more angles — all cameras sent for this event.")
+                             tg.t(self._lang, "no_more"))
             return
 
         for n in to_send:
@@ -665,15 +672,16 @@ class TelegramPoller(QThread):
             # SAME wall-clock window so a reply still delivers all four angles.
             if not self._cut_sibling_clip(folder, cam):
                 api_send_message(self._token, self._chat_id,
-                                 f"No footage for {self._label(cam)} at this time.")
+                                 tg.t(self._lang, "no_footage", where=self._label(cam)))
                 return False
         send_path = self._clip_for_send(folder, cam, path)
-        caption = f"\U0001F3A5 {self._label(cam)}"
+        caption = tg.t(self._lang, "clip", where=self._label(cam))
         try:
             result = api_send_video(self._token, self._chat_id, caption, send_path)
         except Exception as e:
             api_send_message(self._token, self._chat_id,
-                             f"Could not send {self._label(cam)}: {e!s}")
+                             tg.t(self._lang, "send_failed",
+                                  where=self._label(cam), err=str(e)))
             return False
         if result.get("ok"):
             self._map.record(_message_id(result), str(folder), cam, "video")
@@ -681,7 +689,8 @@ class TelegramPoller(QThread):
             return True
         api_send_message(
             self._token, self._chat_id,
-            f"Could not send {self._label(cam)}: {result.get('description', '?')}",
+            tg.t(self._lang, "send_failed", where=self._label(cam),
+                 err=result.get("description", "?")),
         )
         return False
 
@@ -825,11 +834,11 @@ class TelegramPoller(QThread):
     def _handle_command(self, text: str) -> None:
         cmd = text.split()[0].lower().lstrip("/").split("@")[0]
         if cmd in ("start", "help"):
-            api_send_message(self._token, self._chat_id, _HELP_TEXT)
+            api_send_message(self._token, self._chat_id, tg.t(self._lang, "help"))
         elif cmd == "last":
             self._send_last()
         else:
-            api_send_message(self._token, self._chat_id, "Unknown command. Send /help.")
+            api_send_message(self._token, self._chat_id, tg.t(self._lang, "unknown_cmd"))
 
     def _send_last(self) -> None:
         if not self._events_dir:
@@ -842,13 +851,13 @@ class TelegramPoller(QThread):
             api_send_message(self._token, self._chat_id, f"Could not read events: {e!s}")
             return
         if not events:
-            api_send_message(self._token, self._chat_id, "No events recorded yet.")
+            api_send_message(self._token, self._chat_id, tg.t(self._lang, "no_events"))
             return
         ev = events[0]
         cam = getattr(ev, "trigger_cam", 0)
         thumb = getattr(ev, "thumb", None)
-        caption = (f"\U0001F551 Latest: {self._label(cam)} — {ev.pretty}  "
-                   f"{ev.start_at:%H:%M:%S}")
+        caption = tg.t(self._lang, "latest", where=self._label(cam),
+                       when=f"{ev.start_at:%H:%M:%S}")
         if thumb and Path(thumb).is_file():
             result = api_send_photo(self._token, self._chat_id, caption, Path(thumb))
             if result.get("ok"):

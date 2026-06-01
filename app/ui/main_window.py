@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
             post_roll_s=settings.live_post_roll_s,
             map_cap=settings.telegram_map_cap,
             live_clips_dir=self._live_clips_dir,
+            lang=settings.telegram_lang,
             parent=self,
         )
         self._notifier.set_cam_labels(self._cam_labels)
@@ -261,21 +262,24 @@ class MainWindow(QMainWindow):
             self._settings.telegram_bot_token,
             self._settings.telegram_chat_id,
             commands_enabled=self._settings.telegram_commands,
+            lang=self._settings.telegram_lang,
             parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        token, chat_id, commands = dlg.values()
+        token, chat_id, commands, lang = dlg.values()
         persist_env_values(self._settings, {
             "TELEGRAM_BOT_TOKEN": token,
             "TELEGRAM_CHAT_ID": chat_id,
             "TELEGRAM_COMMANDS": "1" if commands else "0",
+            "TELEGRAM_LANG": lang,
         })
         self._settings = replace(
             self._settings, telegram_bot_token=token, telegram_chat_id=chat_id,
-            telegram_commands=commands,
+            telegram_commands=commands, telegram_lang=lang,
         )
-        self._notifier.configure(token, chat_id, commands_enabled=commands)
+        self._notifier.configure(token, chat_id, commands_enabled=commands,
+                                 lang=lang)
         bus.info("APP", "Telegram settings updated")
 
     def _open_rename_dialog(self) -> None:

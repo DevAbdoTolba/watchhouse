@@ -15,6 +15,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -56,7 +57,8 @@ class TelegramDialog(QDialog):
     """Edit Telegram credentials. Call values() after exec() == Accepted."""
 
     def __init__(self, token: str, chat_id: str,
-                 commands_enabled: bool = True, parent=None) -> None:
+                 commands_enabled: bool = True, lang: str = "en",
+                 parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("WipeDialog")  # reuse shared dialog styling
         self.setWindowTitle("Telegram Alerts")
@@ -134,6 +136,23 @@ class TelegramDialog(QDialog):
         self._commands_chk.setChecked(commands_enabled)
         v.addWidget(self._commands_chk)
 
+        # Message language for what the bot sends to the family.
+        lang_row = QWidget(self)
+        lr = QHBoxLayout(lang_row)
+        lr.setContentsMargins(0, 0, 0, 0)
+        lr.setSpacing(10)
+        lang_tag = QLabel("Language", lang_row)
+        lang_tag.setObjectName("DialogFieldLabel")
+        lang_tag.setMinimumWidth(78)
+        self._lang_combo = QComboBox(lang_row)
+        self._lang_combo.addItem("English", "en")
+        self._lang_combo.addItem("العربية", "ar")
+        self._lang_combo.setCurrentIndex(
+            1 if str(lang).strip().lower().startswith("ar") else 0)
+        lr.addWidget(lang_tag)
+        lr.addWidget(self._lang_combo, 1)
+        v.addWidget(lang_row)
+
         # Status line (Detect/Test feedback).
         self._status = QLabel("", self)
         self._status.setObjectName("DialogSubtitle")
@@ -196,8 +215,9 @@ class TelegramDialog(QDialog):
             self._chat_edit.setText(chat_id)
         self._set_busy(False, message)
 
-    def values(self) -> tuple[str, str, bool]:
-        """(token, chat_id, commands_enabled); token/chat trimmed."""
+    def values(self) -> tuple[str, str, bool, str]:
+        """(token, chat_id, commands_enabled, lang); token/chat trimmed."""
         return (self._token_edit.text().strip(),
                 self._chat_edit.text().strip(),
-                self._commands_chk.isChecked())
+                self._commands_chk.isChecked(),
+                self._lang_combo.currentData() or "en")
