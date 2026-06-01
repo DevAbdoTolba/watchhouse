@@ -158,7 +158,7 @@ class Settings:
             telegram_map_cap=max(1, int(os.environ.get("TELEGRAM_MAP_CAP", "5000"))),
             live_conf=float(os.environ.get("LIVE_CONF", "0.40")),
             live_cooldown_s=float(os.environ.get("LIVE_COOLDOWN_SECONDS", "45")),
-            live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "1")),
+            live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "0")),
             live_pre_roll_s=float(os.environ.get("LIVE_PRE_ROLL_SECONDS", "2")),
             live_post_roll_s=float(os.environ.get("LIVE_POST_ROLL_SECONDS", "8")),
             live_autosend_clip=_truthy(os.environ.get("LIVE_AUTOSEND_CLIP", "0")),

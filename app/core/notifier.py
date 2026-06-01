@@ -625,21 +625,52 @@ class TelegramPoller(QThread):
             if self._send_clip(folder, n):
                 sent.add(n)
 
+    # A replied video is capped at this many seconds: the family gets the real
+    # event clip if it's already short (dynamic length), or a tight 30s excerpt
+    # when the event chunk runs long - never a multi-minute blob. The full-length
+    # clip always stays in the gallery; only the Telegram upload is capped.
+    _CLIP_MAX_S = 30.0
+
+    def _clip_duration_s(self, folder: Path) -> float:
+        """The event's real clip length from its sidecar, or 0 if unknown."""
+        try:
+            meta = json.loads((folder / "event.json").read_text(encoding="utf-8"))
+            return float(meta.get("duration_s", 0.0))
+        except (OSError, ValueError, KeyError, TypeError):
+            return 0.0
+
+    def _clip_for_send(self, folder: Path, cam: int, path: Path) -> Path:
+        """The video to upload for `cam`. A clip already within the cap is sent
+        as-is (the real, dynamic event length - a 9s walk-through stays 9s); a
+        longer chunk is trimmed to the first _CLIP_MAX_S seconds (arrival +
+        activity) and cached so repeat replies reuse it."""
+        dur = self._clip_duration_s(folder)
+        if dur <= 0.0 or dur <= self._CLIP_MAX_S + 0.5:
+            return path
+        short = folder / f"cam{cam}_{int(self._CLIP_MAX_S)}s.mp4"
+        if short.is_file() and short.stat().st_size > 0:
+            return short
+        from app.core.events import _cut_clip
+        if _cut_clip(path, short, 0.0, self._CLIP_MAX_S):
+            bus.info("TG", f"capped cam{cam} clip to {int(self._CLIP_MAX_S)}s ({folder.name})")
+            return short
+        return path  # trim failed -> fall back to the full clip
+
     def _send_clip(self, folder: Path, cam: int) -> bool:
         """Send one camera's clip. Returns True only when Telegram accepted it,
         so the caller marks exactly the angles that actually went out."""
         path = folder / f"cam{cam}.mp4"
         if not path.is_file():
-            # Live quick-clips only hold the detecting camera. The other angles
-            # exist in the recordings - cut them on demand for the SAME wall-clock
-            # window so a reply still delivers all four angles.
+            # Other angles exist in the recordings - cut them on demand for the
+            # SAME wall-clock window so a reply still delivers all four angles.
             if not self._cut_sibling_clip(folder, cam):
                 api_send_message(self._token, self._chat_id,
                                  f"No footage for {self._label(cam)} at this time.")
                 return False
+        send_path = self._clip_for_send(folder, cam, path)
         caption = f"\U0001F3A5 {self._label(cam)}"
         try:
-            result = api_send_video(self._token, self._chat_id, caption, path)
+            result = api_send_video(self._token, self._chat_id, caption, send_path)
         except Exception as e:
             api_send_message(self._token, self._chat_id,
                              f"Could not send {self._label(cam)}: {e!s}")
