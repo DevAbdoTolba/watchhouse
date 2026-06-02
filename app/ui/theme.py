@@ -26,6 +26,12 @@ TEXT_DIM    = "#5d6573"   # OKLCH(0.52 0.008 250)
 # Accent  warm amber/copper, used sparingly
 ACCENT      = "#c69561"   # OKLCH(0.74 0.13 70)
 ACCENT_BG   = "#2a2017"
+# Timeline layers, painted back-to-front (front wins where they overlap):
+#   orange = the rolling recording (base) · blue = ranges kept permanently
+#   · green = spans where an extracted event is available
+TL_REC      = ACCENT      # orange/copper - temporary rolling recording
+TL_PINNED   = "#5e9bd6"   # blue  - permanently kept (pinned) ranges
+TL_EVENT    = "#5faf7a"   # green - extracted events (front layer)
 # Status
 OK          = "#4ea683"   # OKLCH(0.72 0.14 155)  teal-green
 WARN        = "#d0a45c"   # OKLCH(0.78 0.14 78)   amber

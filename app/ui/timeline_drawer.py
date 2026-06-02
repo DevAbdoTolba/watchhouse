@@ -62,6 +62,8 @@ class _Strip(QWidget):
         self.setObjectName("Timeline")
         self._cameras = list(cameras)
         self._segments_by_cam: dict[int, list[Clip]] = {}
+        self._events_by_cam: dict[int, list] = {}    # green: (start, end) spans
+        self._pinned_by_cam: dict[int, list] = {}    # blue: permanent ranges
         self._selected: set[int] = set(self._cameras)
         self._day: _date = datetime.now().date()
         self._playhead: datetime | None = None
@@ -84,6 +86,14 @@ class _Strip(QWidget):
 
     def set_segments(self, by_cam: dict[int, list[Clip]]) -> None:
         self._segments_by_cam = by_cam
+        self.update()
+
+    def set_events(self, by_cam: dict) -> None:
+        self._events_by_cam = by_cam or {}
+        self.update()
+
+    def set_pinned(self, by_cam: dict) -> None:
+        self._pinned_by_cam = by_cam or {}
         self.update()
 
     def set_selected(self, selected: set[int]) -> None:
@@ -177,8 +187,16 @@ class _Strip(QWidget):
                 x1 = self._seconds_to_x(min(s_end, self._view_end_s))
                 if x1 - x0 < 2:
                     x1 = x0 + 2
-                color = QColor(theme.ACCENT if is_active else theme.BORDER_2)
+                color = QColor(theme.TL_REC if is_active else theme.BORDER_2)
                 p.fillRect(QRectF(x0, y + 1, x1 - x0, self.LANE_HEIGHT - 2), color)
+
+            # Middle (blue, pinned) then front (green, events) layers, painted
+            # over the recording so the front wins where ranges overlap.
+            if is_active:
+                self._draw_spans(p, self._pinned_by_cam.get(cam_id, []),
+                                 theme.TL_PINNED, y)
+                self._draw_spans(p, self._events_by_cam.get(cam_id, []),
+                                 theme.TL_EVENT, y)
 
         axis_y = len(self._cameras) * (self.LANE_HEIGHT + self.LANE_PADDING) + 4
         p.setPen(QPen(QColor(theme.BORDER), 1))
@@ -201,6 +219,23 @@ class _Strip(QWidget):
                 x = self._seconds_to_x(ph_s)
                 p.setPen(QPen(QColor(theme.ACCENT), 2))
                 p.drawLine(int(x), 0, int(x), axis_y)
+
+    def _draw_spans(self, p, spans, color, y) -> None:
+        """Paint coloured bands for (start_dt, end_dt) ranges on one lane,
+        clipped to the current day + view window (same mapping as clips)."""
+        for s_dt, e_dt in spans:
+            if e_dt.date() < self._day or s_dt.date() > self._day:
+                continue
+            s_start = 0.0 if s_dt.date() < self._day else _seconds_of_time(s_dt)
+            s_end = (_DAY_SECONDS - 1.0 if e_dt.date() > self._day
+                     else _seconds_of_time(e_dt))
+            if s_end < self._view_start_s or s_start > self._view_end_s:
+                continue
+            x0 = self._seconds_to_x(max(s_start, self._view_start_s))
+            x1 = self._seconds_to_x(min(s_end, self._view_end_s))
+            if x1 - x0 < 2:
+                x1 = x0 + 2
+            p.fillRect(QRectF(x0, y + 1, x1 - x0, self.LANE_HEIGHT - 2), QColor(color))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
@@ -394,6 +429,14 @@ class TimelineDrawer(QWidget):
         self._overview.set_segments(by_cam)
         self._detail.set_segments(by_cam)
         self._maybe_autofit()
+
+    def set_events(self, by_cam: dict) -> None:
+        self._overview.set_events(by_cam)
+        self._detail.set_events(by_cam)
+
+    def set_pinned(self, by_cam: dict) -> None:
+        self._overview.set_pinned(by_cam)
+        self._detail.set_pinned(by_cam)
 
     def set_selected_cams(self, selected: set[int]) -> None:
         self._overview.set_selected(selected)

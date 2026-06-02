@@ -738,7 +738,18 @@ class PlaybackView(QWidget):
                 if s.session_id == prev_sid:
                     self._select_event_row(row)
                     break
+        # Green layer on the timeline: where events are available this day.
+        self._timeline.set_events(self._event_spans_by_cam())
+        self._timeline.set_pinned({})  # blue layer: permanent-pin feature pending
         self._update_events_scroll_feedback()
+
+    def _event_spans_by_cam(self) -> dict:
+        """(start, end) spans per trigger camera for the current day's event
+        sessions — drives the timeline's green 'event available' layer."""
+        out: dict[int, list] = {}
+        for s in getattr(self, "_day_sessions", []):
+            out.setdefault(s.trigger_cam, []).append((s.start_at, s.end_at))
+        return out
 
     def _update_events_scroll_feedback(self) -> None:
         """Keep the list's quiet header/footer hints in sync with scroll state:
