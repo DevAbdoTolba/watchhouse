@@ -70,10 +70,33 @@ class Pins:
 
     # --- mutations (UI side) ---
 
+    def _normalize(self) -> None:
+        """Sort and merge overlapping/touching ranges so repeated pins of the
+        same window never stack into duplicates."""
+        if not self.ranges:
+            return
+        ordered = sorted(self.ranges, key=lambda r: r[0])
+        merged = [ordered[0]]
+        for s, e in ordered[1:]:
+            ls, le = merged[-1]
+            if s <= le:                      # overlaps/touches the last -> union
+                merged[-1] = (ls, max(le, e))
+            else:
+                merged.append((s, e))
+        self.ranges = merged
+
     def add_range(self, start: datetime, end: datetime) -> None:
         if end < start:
             start, end = end, start
         self.ranges.append((start, end))
+        self._normalize()
+        self.save()
+
+    def remove_range(self, start: datetime, end: datetime) -> None:
+        """Drop any pinned range that overlaps [start, end] (unpin)."""
+        if end < start:
+            start, end = end, start
+        self.ranges = [(s, e) for s, e in self.ranges if e < start or s > end]
         self.save()
 
     def set_keep_from(self, when: datetime) -> None:

@@ -438,6 +438,13 @@ class TimelineDrawer(QWidget):
         self._overview.set_pinned(by_cam)
         self._detail.set_pinned(by_cam)
 
+    def selected_range(self) -> tuple:
+        """The (start, end) wall-clock window currently framed by the overview
+        viewport rectangle — what PIN / UNPIN act on."""
+        vs, ve = self._overview.viewport()
+        base = datetime.combine(self._day, _time())
+        return base + timedelta(seconds=vs), base + timedelta(seconds=ve)
+
     def set_selected_cams(self, selected: set[int]) -> None:
         self._overview.set_selected(selected)
         self._detail.set_selected(selected)

@@ -35,6 +35,7 @@ from app.core.events import EventConfig
 from app.core.notifier import TelegramNotifier
 from app.core.live_detector import LiveDetector
 from app.core.recorder import RecorderSupervisor
+from app.core.pins import Pins
 from app.ui.camera_names_dialog import CameraNamesDialog
 from app.ui.telegram_dialog import TelegramDialog
 from app.ui.camera_tile import CameraTile
@@ -48,6 +49,11 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: Settings) -> None:
         super().__init__()
         self._settings = settings
+        # Permanent-keep ('● KEEPING') state lives here (the live view) and is
+        # persisted via Pins; the pruner and the playback timeline read the file.
+        self._pins = Pins.load(settings.env_path)
+        self._keep_timer = QTimer(self)
+        self._keep_timer.timeout.connect(self._update_keep_counter)
         self._probe: ProbeWorker | None = None
         self._discovery: DiscoveryWorker | None = None
         self._pbprobe: PlaybackProbeWorker | None = None
@@ -243,12 +249,28 @@ class MainWindow(QMainWindow):
 
         self._system_btn.setMenu(system_menu)
 
+        # KEEP RECORDING — live-mode toggle: keep ALL footage from now on
+        # (nothing auto-deleted) with a running since/length/size counter.
+        self._keep_status = QLabel("", bar)
+        self._keep_status.setObjectName("Version")
+        self._keep_status.setStyleSheet("color:#8a91a0; font-size:11px;")
+        self._keep_btn = QPushButton("KEEP REC", bar)
+        self._keep_btn.setObjectName("ToolbarAction")
+        self._keep_btn.setCheckable(True)
+        self._keep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._keep_btn.setMinimumHeight(30)
+        self._keep_btn.setToolTip(
+            "Keep ALL recording from now on (nothing auto-deleted) until turned off")
+        self._keep_btn.toggled.connect(self._toggle_keep)
+
         layout.addWidget(brand)
         layout.addWidget(version)
         layout.addSpacing(20)
         layout.addWidget(self._mode_live_btn)
         layout.addWidget(self._mode_pb_btn)
         layout.addWidget(spacer)
+        layout.addWidget(self._keep_status)
+        layout.addWidget(self._keep_btn)
         layout.addWidget(self._reconnect_btn)
         layout.addWidget(self._console_btn)
         layout.addWidget(self._system_btn)
@@ -324,14 +346,64 @@ class MainWindow(QMainWindow):
             self._mode_pb_btn.setChecked(False)
             self._stack.setCurrentIndex(0)
             self._reconnect_btn.setVisible(True)
+            self._keep_btn.setVisible(True)
+            self._keep_status.setVisible(True)
             bus.info("APP", "switched to LIVE mode")
         else:
             self._mode_live_btn.setChecked(False)
             self._mode_pb_btn.setChecked(True)
             self._stack.setCurrentIndex(1)
             self._reconnect_btn.setVisible(False)
+            self._keep_btn.setVisible(False)
+            self._keep_status.setVisible(False)
             self._playback_view.refresh_library()
             bus.info("APP", "switched to PLAYBACK mode")
+
+    def _toggle_keep(self, on: bool) -> None:
+        from datetime import datetime
+        if on:
+            if self._pins.keep_from is None:
+                self._pins.set_keep_from(datetime.now())
+            self._keep_timer.start(1000)
+            self._keep_btn.setText("● KEEPING")
+        else:
+            self._pins.stop_keep(datetime.now())
+            self._keep_timer.stop()
+            self._keep_btn.setText("KEEP REC")
+            bus.info("REC", "keep-recording off; kept window frozen as permanent")
+        self._update_keep_counter()
+
+    def _kept_size_bytes(self, cutoff_ts: float) -> int:
+        total = 0
+        base = self._settings.recording_dir
+        if not base.is_dir():
+            return 0
+        for d in base.glob("cam*"):
+            if not d.is_dir():
+                continue
+            for mp4 in d.glob("*.mp4"):
+                try:
+                    st = mp4.stat()
+                    if st.st_mtime >= cutoff_ts:
+                        total += st.st_size
+                except OSError:
+                    continue
+        return total
+
+    def _update_keep_counter(self) -> None:
+        if getattr(self, "_keep_status", None) is None:
+            return
+        from datetime import datetime
+        kf = self._pins.keep_from
+        if kf is None:
+            self._keep_status.setText("")
+            return
+        secs = max(0, int((datetime.now() - kf).total_seconds()))
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        mb = self._kept_size_bytes(kf.timestamp()) / 1024 / 1024
+        self._keep_status.setText(
+            f"● {kf:%H:%M:%S} · {h}:{m:02d}:{s:02d} · {mb:.0f} MB")
 
     def _effective_cam_name(self, cam) -> str:
         """Custom name if set, else the camera's built-in location, else label."""
@@ -419,6 +491,16 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         for tile in self._tiles:
             tile.start()
+        # Restore the KEEP-recording state once if it was left on last session.
+        if not getattr(self, "_keep_restored", False):
+            self._keep_restored = True
+            if self._pins.keep_from is not None:
+                self._keep_btn.blockSignals(True)
+                self._keep_btn.setChecked(True)
+                self._keep_btn.blockSignals(False)
+                self._keep_btn.setText("● KEEPING")
+                self._keep_timer.start(1000)
+            self._update_keep_counter()
         # Kick off DVR probe shortly after the window has painted, so the
         # log entries appear in the console if the user opens it.
         QTimer.singleShot(400, self._run_probe)
@@ -429,6 +511,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._refresh_clock.stop()
+        self._keep_timer.stop()
         if self._analyzer is not None:
             # Finalize held cross-segment events while the recorder's segments
             # still exist on disk, then stop the worker and the recorder.
