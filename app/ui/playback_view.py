@@ -280,6 +280,7 @@ class PlaybackView(QWidget):
         self._scan_thread: QThread | None = None
         self._scan_worker: EventsScanWorker | None = None
         self._scan_rescan_pending = False
+        self._events_scanning = False  # drives the list's loading/end footer
         self._all_sessions: list[EventSession] = []  # full, day-agnostic
         self._thumb_loader = ThumbnailLoader(self)
         self._event_pos = 0.0  # clip-relative seconds, for stepping + label
@@ -449,7 +450,28 @@ class PlaybackView(QWidget):
         self._events_list.selectionModel().currentChanged.connect(
             self._on_event_index_changed
         )
+        # Quiet scroll-state feedback so the list never *looks* finished while
+        # there is more above/below or a scan is still running. A thin muted
+        # hint above (earlier events) and a footer below (more / loading / end).
+        hint_css = f"color:{theme.TEXT_MUTED}; font-size:11px; padding:1px;"
+        self._events_top_hint = QLabel("↑ earlier events above", self._events_section)
+        self._events_top_hint.setObjectName("EventsScrollHint")
+        self._events_top_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._events_top_hint.setStyleSheet(hint_css)
+        self._events_top_hint.setVisible(False)
+        ev.addWidget(self._events_top_hint)
         ev.addWidget(self._events_list, 1)
+        self._events_status = QLabel("", self._events_section)
+        self._events_status.setObjectName("EventsScrollHint")
+        self._events_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._events_status.setStyleSheet(hint_css)
+        ev.addWidget(self._events_status)
+        sb = self._events_list.verticalScrollBar()
+        sb.valueChanged.connect(self._update_events_scroll_feedback)
+        sb.rangeChanged.connect(lambda *_: self._update_events_scroll_feedback())
+        self._events_model.modelReset.connect(self._update_events_scroll_feedback)
+        self._events_model.rowsInserted.connect(
+            lambda *_: self._update_events_scroll_feedback())
 
         # Stitch the whole selected presence into one continuous file on demand.
         self._save_full_btn = QPushButton("SAVE FULL CLIP", self._events_section)
@@ -623,6 +645,8 @@ class PlaybackView(QWidget):
         event.json (slow), so it runs on a worker thread; the model/UI consume
         the already-built session list on completion. Overlapping scans are
         coalesced into a single trailing rescan."""
+        self._events_scanning = True
+        self._update_events_scroll_feedback()
         if self._scan_thread is not None:
             self._scan_rescan_pending = True
             return
@@ -642,6 +666,7 @@ class PlaybackView(QWidget):
     def _on_events_scanned(self, events: list, sessions: list) -> None:
         self._scan_thread = None
         self._scan_worker = None
+        self._events_scanning = False
         self._events = events
         self._all_sessions = sessions
         # Day-rollover safety: while following the latest day, advance the
@@ -713,6 +738,31 @@ class PlaybackView(QWidget):
                 if s.session_id == prev_sid:
                     self._select_event_row(row)
                     break
+        self._update_events_scroll_feedback()
+
+    def _update_events_scroll_feedback(self) -> None:
+        """Keep the list's quiet header/footer hints in sync with scroll state:
+        loading during a scan, '↓ more below' / '↑ earlier above' while there's
+        off-screen content, and a settled '— end · N events —' when caught up."""
+        status = getattr(self, "_events_status", None)
+        if status is None:
+            return
+        if getattr(self, "_events_scanning", False):
+            status.setText("Loading…")
+            self._events_top_hint.setVisible(False)
+            return
+        total = self._events_model.total_count()
+        if total == 0:
+            status.setText("")
+            self._events_top_hint.setVisible(False)
+            return
+        sb = self._events_list.verticalScrollBar()
+        more_below = self._events_model.canFetchMore() or sb.value() < sb.maximum()
+        if more_below:
+            status.setText("↓ more below")
+        else:
+            status.setText(f"— end · {total} event{'s' if total != 1 else ''} —")
+        self._events_top_hint.setVisible(sb.value() > 0)
 
     def _select_event_row(self, row: int) -> None:
         """Highlight a row without restarting playback (guarded selection)."""
