@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from app.core import camera_names
 from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
+from app.core.pins import Pins
 from app.core.config import Settings
 from app.core.event_library import (
     EventRecord,
@@ -253,6 +254,11 @@ class PlaybackView(QWidget):
         self._cameras = cameras
         self._settings = settings
         self._library: dict[int, list[Clip]] = {}
+        # Permanent ('pinned', blue) footage: imported clips, user-pinned ranges,
+        # and a live "keep new recording" window. The pruner reads the same file.
+        self._pins = Pins.load(settings.env_path)
+        self._keep_timer = QTimer(self)
+        self._keep_timer.timeout.connect(self._on_keep_tick)
         self._selected_cams: set[int] = {c.index for c in cameras}
         self._selected_day: _date = datetime.now().date()
         # "Follow latest" keeps the Events list pinned to the newest day that
@@ -336,6 +342,16 @@ class PlaybackView(QWidget):
         self._cursor_tick.timeout.connect(self._advance_cursor)
         self._cursor_tick.start(250)
 
+        # Restore the "keep new recording" state if it was on last session.
+        if self._pins.keep_from is not None:
+            self._keep_btn.blockSignals(True)
+            self._keep_btn.setChecked(True)
+            self._keep_btn.setText("KEEPING — STOP")
+            self._keep_btn.blockSignals(False)
+            self._keep_timer.start(1000)
+        self._update_keep_status()
+        self._timeline.set_pinned(self._pinned_spans_by_cam())
+
     # --- Sidebar build ---
 
     def _build_sidebar(self) -> QWidget:
@@ -408,6 +424,29 @@ class PlaybackView(QWidget):
         )
         self._import_btn.clicked.connect(self._on_import_clip)
         rv.addWidget(self._import_btn)
+
+        # Blue layer: pin the clip at the cursor, or keep everything from now on.
+        self._pin_btn = QPushButton("PIN CURRENT", self._rec_section)
+        self._pin_btn.setObjectName("SidebarAction")
+        self._pin_btn.setToolTip(
+            "Keep the clip at the cursor permanently (blue) — exempt from auto-delete")
+        self._pin_btn.clicked.connect(self._pin_current)
+        rv.addWidget(self._pin_btn)
+
+        self._keep_btn = QPushButton("KEEP NEW RECORDING", self._rec_section)
+        self._keep_btn.setObjectName("SidebarAction")
+        self._keep_btn.setCheckable(True)
+        self._keep_btn.setToolTip(
+            "Keep ALL upcoming footage (nothing auto-deleted) until turned off")
+        self._keep_btn.toggled.connect(self._toggle_keep)
+        rv.addWidget(self._keep_btn)
+
+        self._keep_status = QLabel("", self._rec_section)
+        self._keep_status.setObjectName("KeepStatus")
+        self._keep_status.setWordWrap(True)
+        self._keep_status.setStyleSheet(
+            f"color:{theme.TEXT_MUTED}; font-size:11px; padding:1px;")
+        rv.addWidget(self._keep_status)
         v.addWidget(self._rec_section)
 
         # --- Events section (gallery of detected events) ---
@@ -738,9 +777,9 @@ class PlaybackView(QWidget):
                 if s.session_id == prev_sid:
                     self._select_event_row(row)
                     break
-        # Green layer on the timeline: where events are available this day.
+        # Green layer (events available) + blue layer (pinned/kept) on timeline.
         self._timeline.set_events(self._event_spans_by_cam())
-        self._timeline.set_pinned({})  # blue layer: permanent-pin feature pending
+        self._timeline.set_pinned(self._pinned_spans_by_cam())
         self._update_events_scroll_feedback()
 
     def _event_spans_by_cam(self) -> dict:
@@ -750,6 +789,99 @@ class PlaybackView(QWidget):
         for s in getattr(self, "_day_sessions", []):
             out.setdefault(s.trigger_cam, []).append((s.start_at, s.end_at))
         return out
+
+    def _pinned_spans_by_cam(self) -> dict:
+        """Blue-layer spans per camera: imported clips (per camera) + pinned
+        ranges + the live keep window (the last two apply to every camera)."""
+        out: dict[int, list] = {}
+        try:
+            imported_root = str(
+                (self._settings.recording_dir / "imported").resolve()).lower()
+        except OSError:
+            imported_root = ""
+        for cam, clips in self._library.items():
+            for c in clips:
+                try:
+                    if imported_root and imported_root in str(
+                            Path(c.path).resolve()).lower():
+                        out.setdefault(cam, []).append(
+                            (c.start_at, c.end_at_estimated))
+                except OSError:
+                    continue
+        spans = self._pins.all_spans(datetime.now())
+        if spans:
+            for c in self._cameras:
+                out.setdefault(c.index, []).extend(spans)
+        return out
+
+    def _on_keep_tick(self) -> None:
+        self._update_keep_status()
+        self._timeline.set_pinned(self._pinned_spans_by_cam())
+
+    def _toggle_keep(self, on: bool) -> None:
+        if on:
+            if self._pins.keep_from is None:
+                self._pins.set_keep_from(datetime.now())
+            self._keep_timer.start(1000)
+            self._keep_btn.setText("KEEPING — STOP")
+        else:
+            self._pins.stop_keep(datetime.now())
+            self._keep_timer.stop()
+            self._keep_btn.setText("KEEP NEW RECORDING")
+            bus.info("REC", "keep-new-recording off; kept window frozen as permanent")
+        self._update_keep_status()
+        self._timeline.set_pinned(self._pinned_spans_by_cam())
+
+    def _kept_size_bytes(self, keep_from: datetime) -> int:
+        cutoff = keep_from.timestamp()
+        total = 0
+        base = self._settings.recording_dir
+        if not base.is_dir():
+            return 0
+        for c in self._cameras:
+            d = base / f"cam{c.index}"
+            if not d.is_dir():
+                continue
+            for mp4 in d.glob("*.mp4"):
+                try:
+                    st = mp4.stat()
+                    if st.st_mtime >= cutoff:
+                        total += st.st_size
+                except OSError:
+                    continue
+        return total
+
+    def _update_keep_status(self) -> None:
+        if getattr(self, "_keep_status", None) is None:
+            return
+        kf = self._pins.keep_from
+        if kf is None:
+            n = len(self._pins.ranges)
+            self._keep_status.setText(f"📌 {n} pinned range(s) kept" if n else "")
+            return
+        secs = max(0, int((datetime.now() - kf).total_seconds()))
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        mb = self._kept_size_bytes(kf) / 1024 / 1024
+        self._keep_status.setText(
+            f"● KEEPING since {kf:%H:%M:%S}  ·  {h}:{m:02d}:{s:02d}  ·  {mb:.1f} MB")
+
+    def _pin_current(self) -> None:
+        cur = self._cursor
+        clip = None
+        for c in self._cameras:
+            hit = find_clip_at(clips_for_day(self._library, c.index, cur.date()), cur)
+            if hit:
+                clip = hit[0]
+                break
+        if clip is None:
+            self._keep_status.setText("Nothing recorded at the cursor to pin.")
+            return
+        self._pins.add_range(clip.start_at, clip.end_at_estimated)
+        self._timeline.set_pinned(self._pinned_spans_by_cam())
+        self._update_keep_status()
+        bus.info("REC", f"pinned {clip.start_at:%H:%M:%S}–"
+                        f"{clip.end_at_estimated:%H:%M:%S} (kept permanently)")
 
     def _update_events_scroll_feedback(self) -> None:
         """Keep the list's quiet header/footer hints in sync with scroll state:

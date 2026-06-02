@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
@@ -34,6 +35,15 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from app.core.cameras import Camera
 from app.core.config import Settings
 from app.core.log import bus, mask_url
+from app.core.pins import Pins
+
+
+def _parse_seg_start(path: Path) -> datetime | None:
+    """Wall-clock start from a segment filename (2026-06-02T08-00-00.mp4)."""
+    try:
+        return datetime.strptime(path.stem, "%Y-%m-%dT%H-%M-%S")
+    except ValueError:
+        return None
 
 
 def _ffmpeg_path() -> str:
@@ -318,8 +328,11 @@ class RecorderSupervisor(QObject):
             return
         cutoff = time.time() - (self._settings.recording_retention_minutes * 60)
         protected = self._protected_roots()
+        pins = Pins.load(self._settings.env_path)
+        seg_len_min = self._settings.recording_segment_minutes
         pruned = 0
         freed_bytes = 0
+        kept_pinned = 0
         for f in base.rglob("*.mp4"):
             if self._is_protected(f, protected):
                 continue
@@ -328,6 +341,14 @@ class RecorderSupervisor(QObject):
             except OSError:
                 continue
             if stat.st_mtime < cutoff:
+                # Never delete footage the user pinned (blue layer): if this
+                # segment's wall-clock window overlaps a pin / keep-recording
+                # range, keep it even though it aged out of the rolling window.
+                seg_start = _parse_seg_start(f)
+                if seg_start is not None and pins.overlaps(
+                        seg_start, seg_start + timedelta(minutes=seg_len_min)):
+                    kept_pinned += 1
+                    continue
                 try:
                     freed_bytes += stat.st_size
                     f.unlink()
