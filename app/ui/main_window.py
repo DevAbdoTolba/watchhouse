@@ -254,13 +254,16 @@ class MainWindow(QMainWindow):
         self._keep_status = QLabel("", bar)
         self._keep_status.setObjectName("Version")
         self._keep_status.setStyleSheet("color:#8a91a0; font-size:11px;")
-        self._keep_btn = QPushButton("KEEP REC", bar)
+        # Recorder-style toggle: red ● = start keeping all footage, red ❚❚ = stop.
+        self._keep_btn = QPushButton("●", bar)
         self._keep_btn.setObjectName("ToolbarAction")
         self._keep_btn.setCheckable(True)
         self._keep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._keep_btn.setMinimumHeight(30)
+        self._keep_btn.setFixedWidth(42)
+        self._keep_btn.setStyleSheet("color:#e0524a; font-size:16px; font-weight:bold;")
         self._keep_btn.setToolTip(
-            "Keep ALL recording from now on (nothing auto-deleted) until turned off")
+            "● Keep ALL recording from now on (nothing auto-deleted); ❚❚ to stop")
         self._keep_btn.toggled.connect(self._toggle_keep)
 
         layout.addWidget(brand)
@@ -365,11 +368,11 @@ class MainWindow(QMainWindow):
             if self._pins.keep_from is None:
                 self._pins.set_keep_from(datetime.now())
             self._keep_timer.start(1000)
-            self._keep_btn.setText("● KEEPING")
+            self._keep_btn.setText("❚❚")
         else:
             self._pins.stop_keep(datetime.now())
             self._keep_timer.stop()
-            self._keep_btn.setText("KEEP REC")
+            self._keep_btn.setText("●")
             bus.info("REC", "keep-recording off; kept window frozen as permanent")
         self._update_keep_counter()
 
@@ -498,7 +501,7 @@ class MainWindow(QMainWindow):
                 self._keep_btn.blockSignals(True)
                 self._keep_btn.setChecked(True)
                 self._keep_btn.blockSignals(False)
-                self._keep_btn.setText("● KEEPING")
+                self._keep_btn.setText("❚❚")
                 self._keep_timer.start(1000)
             self._update_keep_counter()
         # Kick off DVR probe shortly after the window has painted, so the

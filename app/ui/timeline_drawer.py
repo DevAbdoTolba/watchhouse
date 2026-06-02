@@ -190,13 +190,16 @@ class _Strip(QWidget):
                 color = QColor(theme.TL_REC if is_active else theme.BORDER_2)
                 p.fillRect(QRectF(x0, y + 1, x1 - x0, self.LANE_HEIGHT - 2), color)
 
-            # Middle (blue, pinned) then front (green, events) layers, painted
+            # Middle (blue, locked) then front (green, events) layers, painted
             # over the recording so the front wins where ranges overlap.
             if is_active:
-                self._draw_spans(p, self._pinned_by_cam.get(cam_id, []),
-                                 theme.TL_PINNED, y)
+                pinned = self._pinned_by_cam.get(cam_id, [])
+                self._draw_spans(p, pinned, theme.TL_PINNED, y)
                 self._draw_spans(p, self._events_by_cam.get(cam_id, []),
                                  theme.TL_EVENT, y)
+                # Lock marker: a thin blue bar drawn LAST, so a locked event
+                # (which stays green on top) still visibly shows it's locked.
+                self._draw_spans(p, pinned, theme.TL_PINNED, y, height=3)
 
         axis_y = len(self._cameras) * (self.LANE_HEIGHT + self.LANE_PADDING) + 4
         p.setPen(QPen(QColor(theme.BORDER), 1))
@@ -220,9 +223,11 @@ class _Strip(QWidget):
                 p.setPen(QPen(QColor(theme.ACCENT), 2))
                 p.drawLine(int(x), 0, int(x), axis_y)
 
-    def _draw_spans(self, p, spans, color, y) -> None:
+    def _draw_spans(self, p, spans, color, y, height=None) -> None:
         """Paint coloured bands for (start_dt, end_dt) ranges on one lane,
-        clipped to the current day + view window (same mapping as clips)."""
+        clipped to the current day + view window (same mapping as clips). A
+        small `height` draws a thin top bar (used as a lock marker)."""
+        h = (self.LANE_HEIGHT - 2) if height is None else height
         for s_dt, e_dt in spans:
             if e_dt.date() < self._day or s_dt.date() > self._day:
                 continue
@@ -235,7 +240,7 @@ class _Strip(QWidget):
             x1 = self._seconds_to_x(min(s_end, self._view_end_s))
             if x1 - x0 < 2:
                 x1 = x0 + 2
-            p.fillRect(QRectF(x0, y + 1, x1 - x0, self.LANE_HEIGHT - 2), QColor(color))
+            p.fillRect(QRectF(x0, y + 1, x1 - x0, h), QColor(color))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:

@@ -416,19 +416,22 @@ class PlaybackView(QWidget):
         self._import_btn.clicked.connect(self._on_import_clip)
         rv.addWidget(self._import_btn)
 
-        # Blue layer: pin/unpin the time window framed on the timeline overview.
-        self._pin_btn = QPushButton("PIN RANGE", self._rec_section)
+        # Blue layer: lock/unlock the footage inside the window you frame on the
+        # timeline overview (drag the overview rectangle to set the window).
+        self._pin_btn = QPushButton("🔒 LOCK FOOTAGE", self._rec_section)
         self._pin_btn.setObjectName("SidebarAction")
         self._pin_btn.setToolTip(
-            "Keep the window framed on the timeline (drag the overview rectangle) "
-            "permanently — exempt from auto-delete (blue)")
+            "Lock the footage inside the framed window (drag the overview "
+            "rectangle) so it is kept forever and never auto-deleted (blue). "
+            "Empty gaps in the window are not locked.")
         self._pin_btn.clicked.connect(self._pin_range)
         rv.addWidget(self._pin_btn)
 
-        self._unpin_btn = QPushButton("UNPIN RANGE", self._rec_section)
+        self._unpin_btn = QPushButton("UNLOCK FOOTAGE", self._rec_section)
         self._unpin_btn.setObjectName("SidebarAction")
         self._unpin_btn.setToolTip(
-            "Remove pins inside the framed window (footage resumes auto-delete)")
+            "Unlock footage inside the framed window (it resumes normal "
+            "auto-delete)")
         self._unpin_btn.clicked.connect(self._unpin_range)
         rv.addWidget(self._unpin_btn)
 
@@ -810,10 +813,29 @@ class PlaybackView(QWidget):
         if (end - start).total_seconds() < 1:
             self._pin_status.setText("Frame a window on the timeline first.")
             return
-        self._pins.add_range(start, end)
+        # Lock only footage that actually exists in the window — never the gaps.
+        subs = self._recorded_subranges(start, end)
+        if not subs:
+            self._pin_status.setText("No footage in that window to lock.")
+            return
+        for s, e in subs:
+            self._pins.add_range(s, e)
         self._timeline.set_pinned(self._pinned_spans_by_cam())
         self._refresh_pin_status()
-        bus.info("REC", f"pinned {start:%H:%M:%S}–{end:%H:%M:%S} (kept permanently)")
+        bus.info("REC", f"locked {len(subs)} footage span(s) in "
+                        f"{start:%H:%M:%S}–{end:%H:%M:%S}")
+
+    def _recorded_subranges(self, start, end) -> list:
+        """Intersections of [start, end] with clips that actually exist (any
+        camera), so locking covers real footage only and never empty gaps."""
+        spans = []
+        for clips in self._library.values():
+            for c in clips:
+                lo = max(start, c.start_at)
+                hi = min(end, c.end_at_estimated)
+                if hi > lo:
+                    spans.append((lo, hi))
+        return spans
 
     def _unpin_range(self) -> None:
         start, end = self._timeline.selected_range()
@@ -829,7 +851,8 @@ class PlaybackView(QWidget):
             return
         n = len(self._pins.ranges)
         keeping = " · ● keeping live" if self._pins.keep_from is not None else ""
-        self._pin_status.setText((f"📌 {n} pinned range(s)" if n else "no pins") + keeping)
+        self._pin_status.setText(
+            (f"🔒 {n} locked range(s)" if n else "nothing locked") + keeping)
 
     def _update_events_scroll_feedback(self) -> None:
         """Keep the list's quiet header/footer hints in sync with scroll state:
