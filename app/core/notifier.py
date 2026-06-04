@@ -41,14 +41,6 @@ _UPLOAD_TIMEOUT_S = 120          # clip uploads are larger / slower than a photo
 _MAX_UPLOAD_BYTES = 49 * 1024 * 1024  # Telegram bot send cap is 50 MB; stay under
 _POLL_TIMEOUT_S = 10             # getUpdates long-poll; bounds shutdown latency
 
-_HELP_TEXT = (
-    "🏠 Watchhouse bot\n"
-    "• Reply to an alert photo → get the detecting camera's clip.\n"
-    "• Reply again → the next camera angles (until all are sent).\n"
-    "• /last → the newest event.\n"
-    "• /help → this message."
-)
-
 
 def _call(token: str, method: str, payload: dict) -> dict:
     """Blocking JSON Bot API call. Used by the setup dialog's Detect / Test
@@ -148,13 +140,29 @@ def api_send_message(token: str, chat_id: str, text: str) -> dict:
     return _call(token, "sendMessage", {"chat_id": chat_id.strip(), "text": text})
 
 
-def api_send_photo(token: str, chat_id: str, caption: str, path: Path) -> dict:
-    return _post_multipart(token, "sendPhoto",
-                           {"chat_id": chat_id.strip(), "caption": caption},
-                           "photo", path)
+def alert_markup(lang: str, with_capture: bool = True) -> str:
+    """Inline keyboard JSON for an alert: a 🎥 Capture button (the detecting
+    camera's clip) and a 🎬 All cameras button (every angle). On a clip message
+    Capture is dropped (the clip is already here), leaving just All cameras.
+    callback_data stays tiny ('cap'/'all'); the event is resolved from the
+    message the button is attached to, same as a reply."""
+    row = []
+    if with_capture:
+        row.append({"text": tg.t(lang, "btn_capture"), "callback_data": "cap"})
+    row.append({"text": tg.t(lang, "btn_all"), "callback_data": "all"})
+    return json.dumps({"inline_keyboard": [row]})
 
 
-def api_send_video(token: str, chat_id: str, caption: str, path: Path) -> dict:
+def api_send_photo(token: str, chat_id: str, caption: str, path: Path,
+                   reply_markup: str | None = None) -> dict:
+    fields = {"chat_id": chat_id.strip(), "caption": caption}
+    if reply_markup:
+        fields["reply_markup"] = reply_markup
+    return _post_multipart(token, "sendPhoto", fields, "photo", path)
+
+
+def api_send_video(token: str, chat_id: str, caption: str, path: Path,
+                   reply_markup: str | None = None) -> dict:
     """Upload an mp4 clip. Falls back to sendDocument when Telegram refuses the
     video (it won't transcode HEVC), so the clip is always at least downloadable.
     Guards the 49 MB bot upload cap. Returns the parsed API result dict."""
@@ -165,17 +173,31 @@ def api_send_video(token: str, chat_id: str, caption: str, path: Path) -> dict:
     if size > _MAX_UPLOAD_BYTES:
         mb = size // (1024 * 1024)
         return {"ok": False, "description": f"clip too large ({mb} MB > 49 MB)"}
+    video_fields = {"chat_id": chat_id.strip(), "caption": caption,
+                    "supports_streaming": "true"}
+    doc_fields = {"chat_id": chat_id.strip(), "caption": caption}
+    if reply_markup:
+        video_fields["reply_markup"] = reply_markup
+        doc_fields["reply_markup"] = reply_markup
     try:
-        r = _post_multipart(token, "sendVideo",
-                            {"chat_id": chat_id.strip(), "caption": caption,
-                             "supports_streaming": "true"}, "video", path)
+        r = _post_multipart(token, "sendVideo", video_fields, "video", path)
         if r.get("ok"):
             return r
     except urllib.error.HTTPError:
         pass  # fall through to document delivery
-    return _post_multipart(token, "sendDocument",
-                           {"chat_id": chat_id.strip(), "caption": caption},
-                           "document", path)
+    return _post_multipart(token, "sendDocument", doc_fields, "document", path)
+
+
+def api_answer_callback(token: str, callback_query_id: str, text: str = "") -> dict:
+    """Acknowledge a button tap so Telegram stops the client's loading spinner.
+    `text` shows as a brief toast. Best-effort; never raises into the caller."""
+    try:
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        return _call(token, "answerCallbackQuery", payload)
+    except Exception:
+        return {"ok": False}
 
 
 def api_edit_message(token: str, chat_id: str, message_id: int, text: str) -> dict:
@@ -205,7 +227,8 @@ class _SendTask(QRunnable):
 
     def __init__(self, token: str, chat_id: str, caption: str,
                  thumb: Path | None, tmap=None, folder: str = "",
-                 cam: int = 0, kind: str = "thumb", t: float = 0.0) -> None:
+                 cam: int = 0, kind: str = "thumb", t: float = 0.0,
+                 markup: str | None = None) -> None:
         super().__init__()
         self._token = token
         self._chat_id = chat_id
@@ -216,12 +239,14 @@ class _SendTask(QRunnable):
         self._cam = cam
         self._kind = kind
         self._t = t
+        self._markup = markup
 
     def run(self) -> None:
         try:
             if self._thumb is not None and self._thumb.is_file():
                 result = api_send_photo(self._token, self._chat_id,
-                                        self._caption, self._thumb)
+                                        self._caption, self._thumb,
+                                        reply_markup=self._markup)
                 if result.get("ok"):
                     bus.info("TG", "alert sent (photo)")
                     # Record so a reply can drill in. Segment thumbs carry a
@@ -250,7 +275,7 @@ class _QuickClipTask(QRunnable):
     record it so a reply can fetch the other angles. Off the UI thread."""
 
     def __init__(self, token: str, chat_id: str, cam_id: int, cam_label: str,
-                 folder: str, tmap) -> None:
+                 folder: str, tmap, lang: str = "en") -> None:
         super().__init__()
         self._token = token
         self._chat_id = chat_id
@@ -258,14 +283,17 @@ class _QuickClipTask(QRunnable):
         self._label = cam_label
         self._folder = folder
         self._map = tmap
+        self._lang = lang
 
     def run(self) -> None:
         try:
             path = Path(self._folder) / f"cam{self._cam_id}.mp4"
             if not path.is_file():
                 return
-            caption = f"\U0001F3A5 {self._label} — clip ready"
-            result = api_send_video(self._token, self._chat_id, caption, path)
+            caption = tg.t(self._lang, "clip", where=self._label)
+            markup = alert_markup(self._lang, with_capture=False) if self._map else None
+            result = api_send_video(self._token, self._chat_id, caption, path,
+                                    reply_markup=markup)
             if result.get("ok"):
                 bus.info("TG", f"quick clip sent (cam{self._cam_id})")
                 if self._map is not None:
@@ -399,8 +427,10 @@ class TelegramNotifier(QObject):
         # Pass the map only when commands are on, so replies can drill into the
         # clip; otherwise this is a plain fire-and-forget push.
         tmap = self._map if self._commands else None
+        markup = alert_markup(self._lang) if tmap is not None else None
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
-                                   tmap=tmap, folder=folder_s, cam=cam_id))
+                                   tmap=tmap, folder=folder_s, cam=cam_id,
+                                   markup=markup))
 
     def notify_live(self, cam_id: int, cam_label: str, title: str,
                     thumb_path: str) -> None:
@@ -417,8 +447,10 @@ class TelegramNotifier(QObject):
         caption = tg.t(self._lang, "alert_live", where=cam_label, when=when)
         thumb = Path(thumb_path) if thumb_path else None
         tmap = self._map if self._commands else None
+        markup = alert_markup(self._lang) if tmap is not None else None
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
-                                   tmap=tmap, cam=cam_id, kind="live", t=time.time()))
+                                   tmap=tmap, cam=cam_id, kind="live",
+                                   t=time.time(), markup=markup))
 
     def send_quick_clip(self, cam_id: int, cam_label: str, folder: str) -> None:
         """Auto-push the instant quick clip (the ~30s pre-event-buffer video)
@@ -428,7 +460,8 @@ class TelegramNotifier(QObject):
             return
         self._pool.start(_QuickClipTask(self._token, self._chat_id, cam_id,
                                         cam_label, folder,
-                                        self._map if self._commands else None))
+                                        self._map if self._commands else None,
+                                        lang=self._lang))
 
     @staticmethod
     def _what(clip) -> str:
@@ -529,7 +562,9 @@ class TelegramPoller(QThread):
             try:
                 result = self._api(
                     "getUpdates",
-                    {"offset": offset, "timeout": _POLL_TIMEOUT_S},
+                    {"offset": offset, "timeout": _POLL_TIMEOUT_S,
+                     "allowed_updates": ["message", "channel_post",
+                                         "callback_query"]},
                     _POLL_TIMEOUT_S + 10,
                 )
             except Exception as e:
@@ -563,6 +598,10 @@ class TelegramPoller(QThread):
         return offset
 
     def _handle(self, upd: dict) -> None:
+        cq = upd.get("callback_query")
+        if cq:
+            self._handle_callback(cq)
+            return
         msg = upd.get("message") or upd.get("channel_post")
         if not msg:
             return
@@ -579,21 +618,47 @@ class TelegramPoller(QThread):
         if text.startswith("/"):
             self._handle_command(text)
 
-    def _dispatch_reply(self, entry: dict) -> None:
-        """Progressive angle delivery. First reply to an event -> its detecting
-        camera(s). Next reply -> the remaining angles. Once every available
-        angle has been sent -> 'no more angles'. State is per event folder, so
-        replying to the thumbnail OR to any sent clip advances the same event.
+    def _answer_callback(self, cq_id: str, text: str = "") -> None:
+        """Stop the client's button spinner with a brief toast. Best-effort."""
+        if cq_id:
+            api_answer_callback(self._token, cq_id, text)
 
-        A reply to a LIVE alert (kind 'live') has no folder yet: resolve it to
-        the matching event clip if the segment tier has since extracted it, else
-        tell the user it's still being prepared so they can reply again."""
+    def _handle_callback(self, cq: dict) -> None:
+        """A tap on an alert's inline button. The button is attached to the alert
+        message, which is already in the map (just like a reply target), so we
+        resolve the event from that message id - no extra state. 'cap' = the
+        detecting camera's clip (progressive), 'all' = every remaining angle.
+
+        We answer the callback FIRST (fast, stops the spinner) and only then do
+        the slow clip work, so the family sees instant feedback on the tap."""
+        msg = cq.get("message") or {}
+        chat = msg.get("chat", {})
+        if str(chat.get("id")) != self._chat_id:
+            return  # SECURITY: only the linked chat may command the bot
+        cq_id = str(cq.get("id", ""))
+        data = (cq.get("data") or "").strip()
+        entry = self._map.lookup(int(msg.get("message_id", 0)))
+        if not entry:
+            self._answer_callback(cq_id, tg.t(self._lang, "cb_expired"))
+            return
+        self._answer_callback(cq_id, tg.t(self._lang, "cb_wait"))
+        self._dispatch_reply(entry, mode="all" if data == "all" else "capture")
+
+    def _dispatch_reply(self, entry: dict, mode: str = "capture") -> None:
+        """Deliver an event's angles. mode 'capture' = progressive (first call ->
+        the detecting camera(s); each later call -> the next remaining angles).
+        mode 'all' = every angle not yet sent at once. State is per event folder,
+        so the thumbnail's buttons OR a sent clip's button advance the same event.
+
+        A LIVE alert (kind 'live') has no folder yet: resolve it to the matching
+        event clip if the segment tier has since extracted it, else queue it and
+        auto-send the moment it's ready (no second tap needed)."""
         if entry.get("k") == "live" and not entry.get("f"):
             cam = int(entry.get("c", 0))
             t = float(entry.get("t", 0.0))
             resolved = self._resolve_live_event(cam, t)
             if resolved is None:
-                self._add_pending(cam, t)
+                self._add_pending(cam, t, mode)
                 api_send_message(self._token, self._chat_id,
                                  tg.t(self._lang, "preparing"))
                 return
@@ -612,8 +677,11 @@ class TelegramPoller(QThread):
 
         key = str(folder)
         sent = self._sent_cams.setdefault(key, set())
-        if not sent:
-            # First reply: the camera(s) that detected the event. Falls back to
+        if mode == "all":
+            # Every angle still owed - if nothing's gone out yet that's all four.
+            to_send = [c for c in all_cams if c not in sent]
+        elif not sent:
+            # First capture: the camera(s) that detected the event. Falls back to
             # the entry's own camera (the trigger) when no list is recorded.
             detecting = [c for c in self._detecting_cams(folder, int(entry.get("c", 0)))
                          if c in all_cams]
@@ -626,10 +694,16 @@ class TelegramPoller(QThread):
                              tg.t(self._lang, "no_more"))
             return
 
+        # On a Capture tap there may still be other angles to fetch, so each
+        # sent clip carries an "All cameras" button. On an All tap everything is
+        # already going out, so no button (a tap would just say "no more").
+        more = [c for c in all_cams if c not in sent and c not in to_send]
+        markup = alert_markup(self._lang, with_capture=False) if (
+            mode == "capture" and more) else None
         for n in to_send:
             if self._stop:
                 break
-            if self._send_clip(folder, n):
+            if self._send_clip(folder, n, markup=markup):
                 sent.add(n)
 
     # A replied video is capped at this many seconds: the family gets the real
@@ -663,7 +737,7 @@ class TelegramPoller(QThread):
             return short
         return path  # trim failed -> fall back to the full clip
 
-    def _send_clip(self, folder: Path, cam: int) -> bool:
+    def _send_clip(self, folder: Path, cam: int, markup: str | None = None) -> bool:
         """Send one camera's clip. Returns True only when Telegram accepted it,
         so the caller marks exactly the angles that actually went out."""
         path = folder / f"cam{cam}.mp4"
@@ -677,7 +751,8 @@ class TelegramPoller(QThread):
         send_path = self._clip_for_send(folder, cam, path)
         caption = tg.t(self._lang, "clip", where=self._label(cam))
         try:
-            result = api_send_video(self._token, self._chat_id, caption, send_path)
+            result = api_send_video(self._token, self._chat_id, caption, send_path,
+                                    reply_markup=markup)
         except Exception as e:
             api_send_message(self._token, self._chat_id,
                              tg.t(self._lang, "send_failed",
@@ -749,13 +824,17 @@ class TelegramPoller(QThread):
 
     _LIVE_MATCH_WINDOW_S = 180.0  # a live alert and its event share a wall-clock
 
-    def _add_pending(self, cam: int, t: float) -> None:
-        """Remember a reply that's waiting for a not-yet-ready clip, so the poll
-        loop can auto-deliver it. De-duped per (cam, alert-time)."""
+    def _add_pending(self, cam: int, t: float, mode: str = "capture") -> None:
+        """Remember a request waiting for a not-yet-ready clip, so the poll loop
+        can auto-deliver it. De-duped per (cam, alert-time); a later 'all' tap
+        upgrades an existing 'capture' request so every angle still goes out."""
         for p in self._pending:
             if p["c"] == cam and abs(p["t"] - t) < 1.0:
+                if mode == "all":
+                    p["m"] = "all"
                 return
-        self._pending.append({"c": cam, "t": t, "since": time.monotonic()})
+        self._pending.append({"c": cam, "t": t, "m": mode,
+                              "since": time.monotonic()})
         bus.info("TG", f"queued auto-send for cam{cam} clip when ready")
 
     def _check_pending(self) -> None:
@@ -773,7 +852,8 @@ class TelegramPoller(QThread):
                 still.append(p)
                 continue
             bus.info("TG", f"pending cam{p['c']} clip ready; auto-sending")
-            self._dispatch_reply({"f": str(folder), "c": p["c"], "k": "thumb"})
+            self._dispatch_reply({"f": str(folder), "c": p["c"], "k": "thumb"},
+                                 mode=p.get("m", "capture"))
         self._pending = still
 
     def _resolve_live_event(self, cam: int, t_epoch: float):

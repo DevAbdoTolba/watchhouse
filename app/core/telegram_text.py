@@ -22,6 +22,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ongoing":    "👀 {where}: still here ({dur})  {when}",
         "ended":      "✅ {where}: all clear — left after {dur}  {when}",
         "clip":       "🎥 {where}",
+        "btn_capture":"🎥 Capture",
+        "btn_all":    "🎬 All cameras",
+        "cb_wait":    "⏳ Sending…",
+        "cb_expired": "Sorry, that one's no longer available.",
         "latest":     "🕒 Latest — {where}  {when}",
         "preparing":  "⏳ The video isn't ready yet — I'll send it automatically "
                       "the moment it is. No need to reply again.",
@@ -40,9 +44,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "join":       ", ",
         "sec":        "{n}s",
         "min":        "{n} min",
-        "help":       "Reply to an alert photo and I'll send the video. Reply to "
-                      "a video for the other camera angles.\n/last — the most "
-                      "recent event.",
+        "help":       "Tap the buttons under an alert: 🎥 Capture for the video, "
+                      "🎬 All cameras for every angle. (Replying to a photo still "
+                      "works too.)\n/last — the most recent event.",
     },
     "ar": {
         "alert_live": "🚨 {where}: حركة الآن  {when}",
@@ -50,6 +54,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ongoing":    "👀 {where}: ما زال موجودًا ({dur})  {when}",
         "ended":      "✅ {where}: انتهى — غادر بعد {dur}  {when}",
         "clip":       "🎥 {where}",
+        "btn_capture":"🎥 الفيديو",
+        "btn_all":    "🎬 كل الكاميرات",
+        "cb_wait":    "⏳ جارٍ الإرسال…",
+        "cb_expired": "عذرًا، لم يعد هذا متاحًا.",
         "latest":     "🕒 الأحدث — {where}  {when}",
         "preparing":  "⏳ الفيديو لم يجهز بعد — سأرسله تلقائيًا فور أن يصبح جاهزًا. "
                       "لا داعي للرد مرة أخرى.",
@@ -68,8 +76,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "join":       "، ",
         "sec":        "{n} ثانية",
         "min":        "{n} دقيقة",
-        "help":       "ردّ على صورة التنبيه وسأرسل الفيديو. ردّ على الفيديو "
-                      "للحصول على زوايا الكاميرات الأخرى.\n/last — أحدث حدث.",
+        "help":       "اضغط الأزرار أسفل التنبيه: 🎥 الفيديو للمقطع، "
+                      "🎬 كل الكاميرات لكل الزوايا. (الردّ على الصورة ما زال يعمل "
+                      "أيضًا.)\n/last — أحدث حدث.",
     },
 }
 
