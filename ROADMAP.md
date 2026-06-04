@@ -138,6 +138,27 @@ How (cheap, no new model):
   of a drawn polygon. Could ship first as a quick win, then generalise to drawn
   zones. Pairs with per-camera Interior/Exterior + the entering/leaving tripwire.
 
+### Per-region detection classes (what to detect, where)
+Builds on the shipped per-camera detect zone (v0.4.59, a draggable rectangle).
+Next: let EACH region also choose WHAT counts inside it — e.g. people only at the
+front door, vehicles only on the driveway, animals in the garden, or "any
+movement" for a sensitive corner. So a region becomes (rectangle + class set).
+
+- Per region: a checklist of classes — person / vehicle / animal / any-motion —
+  defaulting to person+vehicle (today's behaviour). A live/segment detection
+  only fires if its class is enabled for the region it falls in.
+- Multiple regions per camera (not just one rect): different rules per area of
+  the same view (door = people, driveway = cars).
+- "Any movement" = a cheap motion trigger (frame-diff) for classes the model
+  doesn't cover, independent of yolo.
+- Forward-looking: keep the class set OPEN so new models/classes plug in later
+  (faces, packages, license plates, specific animals) without reworking the UI —
+  the region just gains more checkboxes as detectors are added.
+- Storage extends `.cctv-detect-regions.json`: region = {rect, classes[]}; the
+  live filter (and later the segment analyzer) checks class ∈ region.classes.
+- Pairs with: detection margin (this is its general form), polygon zones (swap
+  the rect for a drawn polygon), Re-ID, faces/ALPR.
+
 ### Spatial camera handoff (follow-the-person across cameras)
 **Objective:** when a person is detected in a camera's default detect region
 (e.g. the interior stairs), proactively *extend capture to the spatially
