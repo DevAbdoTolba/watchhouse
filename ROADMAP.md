@@ -116,6 +116,28 @@ Today every camera triggers events all the time. Two coupled changes:
   holding four synchronized clips. (The event already stores all cams; this
   makes the *trigger* fan out to every camera's margin explicitly.)
 
+### Detection margin (central-band detection, full-frame evidence)
+**Problem:** yolov8n fires on tiny edge slivers — e.g. just the toes poking into
+the very bottom of the frame, or a head at the top. That triggers an event whose
+detection box is a useless sliver, even though the saved full frame shows the
+whole person.
+
+**Idea (the user's):** ignore the top/bottom ~10–20% of the model's view when
+deciding whether to trigger — only count detections in the central band — but
+keep RECORDING/saving the FULL frame. So a toe that crosses into the central
+band still triggers, and the evidence clip/thumbnail shows the whole body with a
+comfortable margin above/below.
+
+How (cheap, no new model):
+- A per-camera (or global) `DETECTION_MARGIN_PCT` (e.g. 0.15 = ignore top & bottom
+  15%). Apply it as a band: drop any detection whose box is entirely inside the
+  margin, OR mask the frame fed to the detector so it can't fire there.
+- Recording + the extracted clip/thumbnail stay full-frame — the margin is only a
+  trigger filter, never a crop of the evidence.
+- Simplest form of the polygon-zones feature (below): a horizontal band instead
+  of a drawn polygon. Could ship first as a quick win, then generalise to drawn
+  zones. Pairs with per-camera Interior/Exterior + the entering/leaving tripwire.
+
 ### Spatial camera handoff (follow-the-person across cameras)
 **Objective:** when a person is detected in a camera's default detect region
 (e.g. the interior stairs), proactively *extend capture to the spatially
