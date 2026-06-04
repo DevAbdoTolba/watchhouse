@@ -8,6 +8,7 @@
 .cctv-ip-cache.json
 .cctv-telegram-map.json
 .cctv-pins.json
+.cctv-detect-regions.json
 
 # Archived previous experiment (kept on disk for our reference only,
 # never published to the public repo).

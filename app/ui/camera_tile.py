@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -23,6 +23,7 @@ from app.core.cameras import Camera
 from app.core.config import Settings
 from app.core.log import bus
 from app.core.stream import StreamWorker
+from app.core import detect_regions as dr
 from app.ui import theme
 
 
@@ -67,12 +68,21 @@ class VideoPanel(QWidget):
     no frame is available (connecting, reconnecting, offline).
     """
 
+    region_changed = Signal()   # emitted when the user finishes dragging the box
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumSize(160, 90)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._image: QImage | None = None
         self._message: str | None = "Connecting"
+        # Live-alert detect rectangle (normalized) + drag-editor state.
+        self._region = list(dr.DEFAULT)
+        self._edit = False
+        self._drag: str | None = None
+        self._drag_anchor = (0.0, 0.0)
+        self._drag_region = list(dr.DEFAULT)
+        self.setMouseTracking(True)
 
     @Slot(QImage)
     def set_frame(self, image: QImage) -> None:
@@ -98,6 +108,7 @@ class VideoPanel(QWidget):
             x = (self.width() - scaled.width()) // 2
             y = (self.height() - scaled.height()) // 2
             painter.drawImage(x, y, scaled)
+            self._paint_region(painter)
             return
 
         if self._message:
@@ -108,6 +119,131 @@ class VideoPanel(QWidget):
             font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
             painter.setFont(font)
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._message)
+
+    # --- Detect-zone editor (live-alert region) ---
+
+    def set_region(self, rect) -> None:
+        self._region = list(dr.norm_rect(rect))
+        self.update()
+
+    def region(self) -> tuple:
+        return tuple(self._region)
+
+    def set_edit(self, on: bool) -> None:
+        self._edit = bool(on)
+        self.setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def _img_rect(self) -> QRectF:
+        if self._image is not None and not self._image.isNull():
+            sz = self._image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            return QRectF((self.width() - sz.width()) / 2,
+                          (self.height() - sz.height()) / 2, sz.width(), sz.height())
+        return QRectF(self.rect())
+
+    def _region_px(self) -> QRectF:
+        ir = self._img_rect()
+        x0, y0, x1, y1 = self._region
+        return QRectF(ir.x() + x0 * ir.width(), ir.y() + y0 * ir.height(),
+                      (x1 - x0) * ir.width(), (y1 - y0) * ir.height())
+
+    def _paint_region(self, p: QPainter) -> None:
+        ir, rp = self._img_rect(), self._region_px()
+        if self._edit:  # dim the ignored area so the live detect zone stands out
+            dim = QColor(0, 0, 0, 120)
+            p.fillRect(QRectF(ir.x(), ir.y(), ir.width(), rp.y() - ir.y()), dim)
+            p.fillRect(QRectF(ir.x(), rp.bottom(), ir.width(), ir.bottom() - rp.bottom()), dim)
+            p.fillRect(QRectF(ir.x(), rp.y(), rp.x() - ir.x(), rp.height()), dim)
+            p.fillRect(QRectF(rp.right(), rp.y(), ir.right() - rp.right(), rp.height()), dim)
+        col = QColor(theme.TL_EVENT)
+        pen = QPen(col, 2)
+        if not self._edit:
+            pen.setStyle(Qt.PenStyle.DashLine)
+            col.setAlpha(150)
+            pen.setColor(col)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(rp)
+        if self._edit:
+            p.setBrush(QColor(theme.TL_EVENT))
+            p.setPen(Qt.PenStyle.NoPen)
+            for hx, hy in ((rp.left(), rp.center().y()), (rp.right(), rp.center().y()),
+                           (rp.center().x(), rp.top()), (rp.center().x(), rp.bottom())):
+                p.drawRect(QRectF(hx - 4, hy - 4, 8, 8))
+
+    def _to_norm(self, pos):
+        ir = self._img_rect()
+        return (min(1.0, max(0.0, (pos.x() - ir.x()) / max(1.0, ir.width()))),
+                min(1.0, max(0.0, (pos.y() - ir.y()) / max(1.0, ir.height()))))
+
+    def _hit(self, pos) -> str | None:
+        rp, H = self._region_px(), 9
+        x, y = pos.x(), pos.y()
+        iny = rp.top() - H <= y <= rp.bottom() + H
+        inx = rp.left() - H <= x <= rp.right() + H
+        if abs(x - rp.left()) <= H and iny:
+            return "l"
+        if abs(x - rp.right()) <= H and iny:
+            return "r"
+        if abs(y - rp.top()) <= H and inx:
+            return "t"
+        if abs(y - rp.bottom()) <= H and inx:
+            return "b"
+        if rp.contains(QPointF(x, y)):
+            return "inside"
+        return None
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if not self._edit:
+            event.ignore()
+            return
+        self._drag = self._hit(event.position())
+        self._drag_anchor = self._to_norm(event.position())
+        self._drag_region = list(self._region)
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if not self._edit:
+            return
+        if self._drag is None:
+            cur = {"l": Qt.CursorShape.SizeHorCursor, "r": Qt.CursorShape.SizeHorCursor,
+                   "t": Qt.CursorShape.SizeVerCursor, "b": Qt.CursorShape.SizeVerCursor,
+                   "inside": Qt.CursorShape.SizeAllCursor}.get(
+                       self._hit(event.position()), Qt.CursorShape.CrossCursor)
+            self.setCursor(cur)
+            return
+        self._apply_drag(event.position())
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._edit and self._drag is not None:
+            self._drag = None
+            self._region = list(dr.norm_rect(self._region))
+            self.update()
+            self.region_changed.emit()
+            event.accept()
+
+    def _apply_drag(self, pos) -> None:
+        nx, ny = self._to_norm(pos)
+        x0, y0, x1, y1 = self._region
+        d = self._drag
+        if d == "l":
+            x0 = min(nx, x1 - dr._MIN)
+        elif d == "r":
+            x1 = max(nx, x0 + dr._MIN)
+        elif d == "t":
+            y0 = min(ny, y1 - dr._MIN)
+        elif d == "b":
+            y1 = max(ny, y0 + dr._MIN)
+        elif d == "inside":
+            ax, ay = self._drag_anchor
+            ox0, oy0, ox1, oy1 = self._drag_region
+            w, h = ox1 - ox0, oy1 - oy0
+            x0 = min(max(0.0, ox0 + (nx - ax)), 1.0 - w)
+            y0 = min(max(0.0, oy0 + (ny - ay)), 1.0 - h)
+            x1, y1 = x0 + w, y0 + h
+        self._region = [x0, y0, x1, y1]
+        self.update()
 
 
 class _InfoButton(QPushButton):
@@ -258,6 +394,8 @@ class CameraTile(QFrame):
     # (camera index, QImage) - throttled live-frame tap (~2 fps) feeding the
     # real-time alert tier. Emitted by _tap_frame.
     frame_tapped = Signal(int, QImage)
+    # (camera index) - the live-alert detect rectangle was edited on this tile.
+    detect_region_changed = Signal(int)
 
     def __init__(self, camera: Camera, settings: Settings, default_stream: str, parent=None) -> None:
         super().__init__(parent)
@@ -329,6 +467,15 @@ class CameraTile(QFrame):
         self._reload.setToolTip("Reconnect this camera only")
         self._reload.clicked.connect(self._on_reload)
 
+        self._zone = QPushButton("▣", header)
+        self._zone.setObjectName("TileReload")
+        self._zone.setCheckable(True)
+        self._zone.setFixedSize(24, 22)
+        self._zone.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._zone.setToolTip("Edit the live-alert detect zone\n"
+                              "(drag the green box edges; outside it is ignored)")
+        self._zone.toggled.connect(self._on_zone_toggled)
+
         self._toggle = QPushButton(self._current.upper(), header)
         self._toggle.setObjectName("StreamToggle")
         self._toggle.setCheckable(True)
@@ -343,11 +490,14 @@ class CameraTile(QFrame):
         hl.addWidget(spacer)
         hl.addWidget(self._info)
         hl.addWidget(self._arm)
+        hl.addWidget(self._zone)
         hl.addWidget(self._reload)
         hl.addWidget(self._toggle)
 
         # Video
         self._video = VideoPanel(self)
+        self._video.region_changed.connect(
+            lambda: self.detect_region_changed.emit(self._camera.index))
 
         outer.addWidget(header)
         outer.addWidget(self._video, 1)
@@ -423,6 +573,16 @@ class CameraTile(QFrame):
     def set_display_name(self, name: str) -> None:
         """Update the header's descriptive name (custom rename or default)."""
         self._location_label.set_display(name or self._camera.location)
+
+    def set_detect_region(self, rect) -> None:
+        self._video.set_region(rect)
+
+    def detect_region(self) -> tuple:
+        return self._video.region()
+
+    @Slot(bool)
+    def _on_zone_toggled(self, on: bool) -> None:
+        self._video.set_edit(on)
 
     # Internal
 

@@ -36,6 +36,7 @@ from app.core.notifier import TelegramNotifier
 from app.core.live_detector import LiveDetector
 from app.core.recorder import RecorderSupervisor
 from app.core.pins import Pins
+from app.core import detect_regions as dr
 from app.ui.camera_names_dialog import CameraNamesDialog
 from app.ui.telegram_dialog import TelegramDialog
 from app.ui.camera_tile import CameraTile
@@ -117,6 +118,9 @@ class MainWindow(QMainWindow):
         )
         self._live_detector.live_alert.connect(self._on_live_alert)
         self._live_detector.quick_clip_ready.connect(self._on_quick_clip_ready)
+        # Per-camera live-alert detect rectangles (drag on the tile).
+        self._detect_regions = dr.load(settings.env_path)
+        self._live_detector.set_regions(self._detect_regions)
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -438,6 +442,8 @@ class MainWindow(QMainWindow):
             # the tile to ~2 fps). Without this the LiveDetector gets no frames
             # and never fires — the whole instant-alert path is dead.
             tile.frame_tapped.connect(self._live_detector.submit)
+            tile.set_detect_region(self._detect_regions.get(cam.index, dr.DEFAULT))
+            tile.detect_region_changed.connect(self._on_detect_region_changed)
             tiles.append(tile)
             row, col = divmod(i, 2)
             grid.addWidget(tile, row, col)
@@ -663,6 +669,15 @@ class MainWindow(QMainWindow):
         if self._analyzer is not None:
             self._analyzer.set_armed(set(self._armed_cameras))
         self._live_detector.set_armed(set(self._armed_cameras))
+
+    def _on_detect_region_changed(self, cam_index: int) -> None:
+        tile = next((t for t in self._tiles if t._camera.index == cam_index), None)
+        if tile is None:
+            return
+        self._detect_regions[cam_index] = tile.detect_region()
+        dr.save(self._settings.env_path, self._detect_regions)
+        self._live_detector.set_regions(self._detect_regions)
+        bus.info("LIVE", f"cam{cam_index}: live detect zone updated")
         # refresh the armed count in the status bar without waiting for a scan
         self._status_ai.setText(self._ai_status_text(0, 0))
 

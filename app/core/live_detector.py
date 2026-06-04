@@ -31,6 +31,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
 
 from app.core.detect import Detector
+from app.core import detect_regions as dr
 from app.core.log import bus
 
 
@@ -243,6 +244,9 @@ class LiveDetector(QObject):
         self._encode_signals.ready.connect(self._on_encoded)
         self._busy = False                      # one inference in flight at a time
         self._last_alert: dict[int, float] = {}
+        # Per-camera detect rectangle (normalized). A live detection only counts
+        # if its box overlaps the camera's region; segment events are unaffected.
+        self._regions: dict[int, tuple] = {}
         # Pre-event ring buffer + in-flight captures, per camera.
         self._buffers: dict[int, deque] = {}    # cam -> deque[(monotonic_t, jpeg)]
         self._capturing: dict[int, dict] = {}   # cam -> capture state
@@ -263,6 +267,10 @@ class LiveDetector(QObject):
 
     def set_armed(self, armed: set[int]) -> None:
         self._armed = set(armed)
+
+    def set_regions(self, regions: dict) -> None:
+        """{cam_id: (x0,y0,x1,y1)} normalized detect rectangles (live tier)."""
+        self._regions = dict(regions or {})
 
     @Slot(int, QImage)
     def submit(self, cam_id: int, image: QImage) -> None:
@@ -318,6 +326,16 @@ class LiveDetector(QObject):
         self._busy = False
         if not dets:
             return
+        # Detect-zone filter: keep only detections overlapping this camera's
+        # rectangle, so an edge sliver (e.g. just the toes) doesn't fire.
+        region = self._regions.get(cam_id)
+        if region is not None and frame is not None:
+            h, w = frame.shape[:2]
+            if w and h:
+                dets = [d for d in dets if dr.overlaps(
+                    region, d.x1 / w, d.y1 / h, d.x2 / w, d.y2 / h)]
+            if not dets:
+                return
         persons = sum(1 for d in dets if d.is_person)
         vehicles: dict[str, int] = {}
         for d in dets:
