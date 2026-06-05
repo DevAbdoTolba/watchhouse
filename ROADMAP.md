@@ -216,11 +216,25 @@ How (the right way, NOT body orientation):
   centroid-direction = entering/leaving tag; (2) full polygon near/far zones;
   (3) occupancy counter. Shares the zone editor with spatial-handoff + zones.
 
-### Cross-camera same-person de-duplication (Re-ID)
-One person walking past multiple cameras currently fires up to 4 separate
-events; 3 people => up to 12. Fuse detections of the *same individual* across
-cameras (and across the safe-margin window) into a single event, so the count
-reflects people, not camera angles.
+### Cross-camera same-MOVEMENT fusion — SHIPPED v0.4.62 (links + direction)
+The first cut of "one person past N cameras = ONE event" shipped, but by
+**movement, not identity** (no Re-ID): hand-taught **camera links** declare that
+two cameras share a crossing (cam A edge ↔ cam B edge + a transit time + a name).
+The segment tier records each event's entry/exit frame edge from the centroid
+trajectory; the `CollisionMatcher` fuses two events when they sit on a link's two
+cameras, one EXITS its edge while the other ENTERS its, and the second starts
+within the transit window. The fused alert is ONE Telegram album (both angles)
+named by the link + direction ("Front door — went out") instead of two camera
+pings. Define links in System → Camera Links. Stored in `.cctv-camera-links.json`.
+- **Next upgrades:** (1) *learn* the links/transit from exit→entry co-occurrence
+  instead of hand-teaching; (2) handle 3+ camera chains (a journey, not a pair);
+  (3) tighten the two-people-crossing-at-once case; (4) add the Re-ID precision
+  layer below for when movement alone is ambiguous.
+
+### Cross-camera same-PERSON de-duplication (Re-ID) — precision upgrade
+The movement-based fusion above handles the common case without a model. Re-ID is
+the precision layer for when motion+time+edge is ambiguous (two people crossing
+at once, similar paths): confirm the two camera hits are the *same individual*.
 
 - Approach: person re-identification - appearance embeddings compared by
   cosine similarity within a short temporal window, tying tracks across cams.

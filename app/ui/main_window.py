@@ -37,7 +37,10 @@ from app.core.live_detector import LiveDetector
 from app.core.recorder import RecorderSupervisor
 from app.core.pins import Pins
 from app.core import detect_regions as dr
+from app.core import camera_links
+from app.core.collision import CollisionMatcher
 from app.ui.camera_names_dialog import CameraNamesDialog
+from app.ui.camera_links_dialog import CameraLinksDialog
 from app.ui.telegram_dialog import TelegramDialog
 from app.ui.camera_tile import CameraTile
 from app.ui.grid_focus import GridFocus
@@ -121,6 +124,19 @@ class MainWindow(QMainWindow):
         # Per-camera live-alert detect rectangles (drag on the tile).
         self._detect_regions = dr.load(settings.env_path)
         self._live_detector.set_regions(self._detect_regions)
+
+        # Same-movement cross-camera fusion: one crossing = one event. The
+        # matcher buffers freshly extracted events and fuses pairs that match a
+        # taught camera link, else releases them to the normal notify path.
+        self._camera_links = camera_links.load(settings.env_path)
+        self._collision = CollisionMatcher(
+            self._camera_links,
+            on_collision=self._on_collision,
+            on_single=self._notify_single,
+        )
+        self._collision_timer = QTimer(self)
+        self._collision_timer.timeout.connect(self._collision.sweep)
+        self._collision_timer.start(2000)
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -240,6 +256,9 @@ class MainWindow(QMainWindow):
         self._act_rename.setToolTip("Set a friendly name per camera (alerts + tiles)")
         self._act_telegram = system_menu.addAction("Telegram Alerts…")
         self._act_telegram.setToolTip("Link a Telegram bot for off-device push alerts")
+        self._act_links = system_menu.addAction("Camera Links…")
+        self._act_links.setToolTip(
+            "Tie two cameras at a crossing so one movement = one event")
         system_menu.addSeparator()
         act_wipe = system_menu.addAction("Wipe Data…")
         act_wipe.setToolTip("Delete recordings, caches and stored data (PIN-gated)")
@@ -249,6 +268,7 @@ class MainWindow(QMainWindow):
         self._act_pbprobe.triggered.connect(self._run_pbprobe)
         self._act_rename.triggered.connect(self._open_rename_dialog)
         self._act_telegram.triggered.connect(self._open_telegram_dialog)
+        self._act_links.triggered.connect(self._open_links_dialog)
         act_wipe.triggered.connect(self._open_wipe_dialog)
 
         self._system_btn.setMenu(system_menu)
@@ -311,6 +331,16 @@ class MainWindow(QMainWindow):
         self._notifier.configure(token, chat_id, commands_enabled=commands,
                                  lang=lang)
         bus.info("APP", "Telegram settings updated")
+
+    def _open_links_dialog(self) -> None:
+        dlg = CameraLinksDialog(self._cameras, self._camera_links,
+                                cam_labels=self._cam_labels, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._camera_links = dlg.values()
+        camera_links.save(self._settings.env_path, self._camera_links)
+        self._collision.set_links(self._camera_links)
+        bus.info("LINK", f"camera links updated ({len(self._camera_links)} link(s))")
 
     def _open_rename_dialog(self) -> None:
         dlg = CameraNamesDialog(self._cameras, dict(self._camera_names), parent=self)
@@ -521,12 +551,16 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._refresh_clock.stop()
         self._keep_timer.stop()
+        self._collision_timer.stop()
         if self._analyzer is not None:
             # Finalize held cross-segment events while the recorder's segments
             # still exist on disk, then stop the worker and the recorder.
             self._analyzer.flush_all()
             self._analyzer.request_stop()
             self._analyzer.wait(3000)
+        # Release any event still waiting for a cross-camera partner so its
+        # notification isn't lost (best-effort, before the notifier shuts down).
+        self._collision.flush_all()
         if self._recorder is not None:
             self._recorder.stop(wait_ms=5000)
         for tile in self._tiles:
@@ -704,14 +738,24 @@ class MainWindow(QMainWindow):
             f"event saved: cam{clip.cam_id} triggered {clip.start_at:%H:%M:%S} "
             f"{clip.label}  ({cams})  -> {clip.folder}",
         )
-        self._notifier.notify(clip, self._cam_labels.get(clip.cam_id))
         # Immediately surface the new event in the playback Events gallery
         # (fast path past the 30s timer; also handles day rollover). Best-effort
-        # so a refresh hiccup can never break the notification above.
+        # so a refresh hiccup can never break the notification below.
         try:
             self._playback_view.note_new_event(getattr(clip, "start_at", None))
         except Exception as e:  # pragma: no cover - defensive
             bus.warn("EVT", f"events-list live refresh failed: {e!s}")
+        # Route through the collision matcher: a crossing seen by two cameras is
+        # fused into one notification; everything else falls through to notify().
+        self._collision.feed(clip)
+
+    def _notify_single(self, clip) -> None:
+        """Normal per-camera push (matcher release / no link involved)."""
+        self._notifier.notify(clip, self._cam_labels.get(clip.cam_id))
+
+    def _on_collision(self, link, direction: str, from_clip, to_clip) -> None:
+        """One fused same-movement event: a single named album, two angles."""
+        self._notifier.notify_collision(link.name, direction, from_clip, to_clip)
 
     def _on_ai_totals(self, person_segments: int, vehicle_segments: int) -> None:
         self._status_ai.setText(self._ai_status_text(person_segments, vehicle_segments))

@@ -126,6 +126,29 @@ def _encode_multipart(fields: dict[str, str], file_field: str | None,
     return bytes(out), boundary
 
 
+def _encode_multipart_multi(fields: dict[str, str],
+                            files: dict[str, Path]) -> tuple[bytes, str]:
+    """multipart/form-data with several attached files (for sendMediaGroup)."""
+    boundary = uuid.uuid4().hex
+    crlf = b"\r\n"
+    out = bytearray()
+    for name, value in fields.items():
+        out += b"--" + boundary.encode() + crlf
+        out += f'Content-Disposition: form-data; name="{name}"'.encode() + crlf + crlf
+        out += str(value).encode("utf-8") + crlf
+    for name, path in files.items():
+        ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        out += b"--" + boundary.encode() + crlf
+        out += (
+            f'Content-Disposition: form-data; name="{name}"; '
+            f'filename="{path.name}"'
+        ).encode() + crlf
+        out += f"Content-Type: {ctype}".encode() + crlf + crlf
+        out += path.read_bytes() + crlf
+    out += b"--" + boundary.encode() + b"--" + crlf
+    return bytes(out), boundary
+
+
 def _post_multipart(token: str, method: str, fields: dict[str, str],
                     file_field: str, file_path: Path) -> dict:
     body, boundary = _encode_multipart(fields, file_field, file_path)
@@ -186,6 +209,34 @@ def api_send_video(token: str, chat_id: str, caption: str, path: Path,
     except urllib.error.HTTPError:
         pass  # fall through to document delivery
     return _post_multipart(token, "sendDocument", doc_fields, "document", path)
+
+
+def api_send_media_group(token: str, chat_id: str, caption: str,
+                         paths: list) -> dict:
+    """Send 2+ photos as ONE album message (the caption rides on the first).
+    Falls back to a single sendPhoto when only one valid photo is given.
+    Returns the API result; `result` is a LIST of the sent messages."""
+    valid = [Path(p) for p in paths if p and Path(p).is_file()][:10]
+    if not valid:
+        return {"ok": False, "description": "no photos"}
+    if len(valid) == 1:
+        return api_send_photo(token, chat_id, caption, valid[0])
+    media = []
+    files: dict[str, Path] = {}
+    for i, p in enumerate(valid):
+        key = f"photo{i}"
+        item = {"type": "photo", "media": f"attach://{key}"}
+        if i == 0:
+            item["caption"] = caption
+        media.append(item)
+        files[key] = p
+    body, boundary = _encode_multipart_multi(
+        {"chat_id": chat_id.strip(), "media": json.dumps(media)}, files)
+    url = _API.format(token=token.strip(), method="sendMediaGroup")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    with urllib.request.urlopen(req, timeout=_UPLOAD_TIMEOUT_S) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
 
 
 def api_answer_callback(token: str, callback_query_id: str, text: str = "") -> dict:
@@ -305,6 +356,43 @@ class _QuickClipTask(QRunnable):
             bus.warn("TG", f"quick clip send failed: HTTP {e.code}")
         except Exception as e:
             bus.warn("TG", f"quick clip send failed: {e!s}")
+
+
+class _CollisionTask(QRunnable):
+    """Send a fused same-movement event: one album of both camera thumbs, named
+    by the link + direction. Records each sent message so a reply can pull the
+    clips of the event folder. Off the UI thread."""
+
+    def __init__(self, token: str, chat_id: str, caption: str, thumbs: list,
+                 tmap, folder: str, cam: int) -> None:
+        super().__init__()
+        self._token = token
+        self._chat_id = chat_id
+        self._caption = caption
+        self._thumbs = thumbs
+        self._map = tmap
+        self._folder = folder
+        self._cam = cam
+
+    def run(self) -> None:
+        try:
+            result = api_send_media_group(self._token, self._chat_id,
+                                          self._caption, self._thumbs)
+            if not result.get("ok"):
+                bus.warn("TG", f"collision album rejected: {result.get('description', '?')}")
+                return
+            bus.info("TG", "collision alert sent (album)")
+            sent = result.get("result")
+            if self._map is not None and self._folder and isinstance(sent, list):
+                for msg in sent:
+                    mid = _message_id({"result": msg})
+                    if mid is not None:
+                        self._map.record(mid, self._folder, self._cam, "thumb")
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:200] if e.fp else ""
+            bus.warn("TG", f"collision send failed: HTTP {e.code} {body}")
+        except Exception as e:
+            bus.warn("TG", f"collision send failed: {e!s}")
 
 
 class TelegramNotifier(QObject):
@@ -506,6 +594,26 @@ class TelegramNotifier(QObject):
                                         cam_label, folder,
                                         self._map if self._commands else None,
                                         lang=self._lang))
+
+    def notify_collision(self, name: str, direction: str, from_clip,
+                         to_clip) -> None:
+        """Fused same-movement event: one album of both angles, named by the
+        link + direction (e.g. 'Front door — went out') instead of a camera.
+        Replaces the two separate per-camera segment pushes."""
+        if not self.enabled:
+            return
+        when = getattr(from_clip, "start_at", None)
+        when_s = when.strftime("%H:%M:%S") if when is not None else ""
+        caption = tg.t(self._lang, "collision", name=name, direction=direction,
+                       when=when_s)
+        thumbs = [getattr(from_clip, "thumb_path", None),
+                  getattr(to_clip, "thumb_path", None)]
+        folder = getattr(from_clip, "folder", None)
+        folder_s = str(folder) if folder is not None else ""
+        cam = getattr(from_clip, "cam_id", 0)
+        tmap = self._map if self._commands else None
+        self._pool.start(_CollisionTask(self._token, self._chat_id, caption,
+                                        thumbs, tmap, folder_s, cam))
 
     @staticmethod
     def _what(clip) -> str:

@@ -130,6 +130,10 @@ class EventClip:
     # the clip itself is still written to the gallery. Default True so any other
     # construction path keeps notifying.
     in_region: bool = True
+    # Where the subject entered/left the frame ("left"/"right"/"top"/"bottom"/
+    # "none"), from the trajectory. Drives same-movement cross-camera matching.
+    entry_edge: str = "none"
+    exit_edge: str = "none"
     # Presence-session grouping (v0.4.21). All cap-split chunks of ONE
     # continuous presence share a `session_id`; `session_index` is their
     # 0-based order within the session; `session_final` is True on the last
@@ -171,6 +175,49 @@ def label_for(peak_person: int, peak_vehicle: int) -> str:
     if peak_vehicle:
         parts.append(f"vehicle_x{peak_vehicle}")
     return "_".join(parts) if parts else "object"
+
+
+def _track_centroid(boxes: list) -> "tuple[float, float] | None":
+    """Centroid of the dominant person box in one sampled frame (boxes are
+    [x1,y1,x2,y2,label,conf]). Falls back to the highest-conf box of any class
+    so a vehicle-only crossing still yields a path."""
+    persons = [b for b in boxes if len(b) >= 6 and b[4] == "person"]
+    pool = persons or [b for b in boxes if len(b) >= 6]
+    if not pool:
+        return None
+    b = max(pool, key=lambda b: b[5])
+    return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
+
+
+def _edge_at(cx: float, cy: float, w: float, h: float, band: float = 0.33) -> str:
+    """Nearest frame edge to a point, or 'none' if it sits in the central area.
+    `band` is the outer fraction of the frame that counts as 'at the edge'."""
+    if not (w and h):
+        return "none"
+    nx, ny = cx / w, cy / h
+    d = {"left": nx, "right": 1.0 - nx, "top": ny, "bottom": 1.0 - ny}
+    edge = min(d, key=d.get)
+    return edge if d[edge] <= band else "none"
+
+
+def motion_edges(tracks: list, w: float, h: float) -> tuple[str, str]:
+    """(entry_edge, exit_edge) for an event from its built `tracks` list — where
+    the subject first appeared and where it was last seen. Drives same-movement
+    matching across cameras. 'none' when there's no clean edge (milling about)."""
+    cents = [c for c in (_track_centroid(tr.get("b", [])) for tr in tracks) if c]
+    if not cents:
+        return "none", "none"
+    entry = _edge_at(cents[0][0], cents[0][1], w, h)
+    exit_ = _edge_at(cents[-1][0], cents[-1][1], w, h)
+    return entry, exit_
+
+
+def _frame_wh(frame) -> tuple[float, float]:
+    try:
+        h, w = frame.shape[:2]
+        return float(w), float(h)
+    except (AttributeError, ValueError):
+        return 0.0, 0.0
 
 
 def _unique_dir(parent: Path, name: str) -> Path:
@@ -406,6 +453,9 @@ def write_event(
         if boxes:
             tracks.append({"t": round(rel, 2), "b": boxes})
 
+    fw, fh = _frame_wh(ev.best_frame)
+    entry_edge, exit_edge = motion_edges(tracks, fw, fh)
+
     # Sidecar metadata for the Events view (confidence-based filtering, etc.).
     meta = {
         "start_at": activity_wall.isoformat(timespec="seconds"),
@@ -418,6 +468,8 @@ def write_event(
         "duration_s": round(clip_dur, 2),
         "cams": cams_captured,
         "in_region": ev.in_region,
+        "entry_edge": entry_edge,
+        "exit_edge": exit_edge,
         "tracks": tracks,
     }
     try:
@@ -438,6 +490,8 @@ def write_event(
         peak_vehicle_conf=ev.peak_vehicle_conf,
         label=label,
         in_region=ev.in_region,
+        entry_edge=entry_edge,
+        exit_edge=exit_edge,
     )
 
 
@@ -638,6 +692,9 @@ def write_event_chain(
         for part, (ps, pe, _) in zip(parts, part_windows)
     ]
 
+    fw, fh = _frame_wh(merged.best_frame)
+    entry_edge, exit_edge = motion_edges(tracks, fw, fh)
+
     meta = {
         "start_at": activity_wall.isoformat(timespec="seconds"),
         "trigger_cam": merged.cam_id,
@@ -649,6 +706,8 @@ def write_event_chain(
         "duration_s": round(total_dur, 2),
         "cams": cams_captured,
         "in_region": merged.in_region,
+        "entry_edge": entry_edge,
+        "exit_edge": exit_edge,
         "segments": len(parts),
         "source_segments": source_segments,
         "presence_state": presence_state,
@@ -676,6 +735,8 @@ def write_event_chain(
         peak_vehicle_conf=merged.peak_vehicle_conf,
         label=label,
         in_region=merged.in_region,
+        entry_edge=entry_edge,
+        exit_edge=exit_edge,
         presence_state=presence_state,
         presence_seconds=presence_seconds,
         session_id=session_id,
