@@ -79,6 +79,10 @@ class PendingEvent:
     best_dets: list = field(default_factory=list)
     # Per-sample boxes for the playback overlay: (segment_offset_s, [Detection]).
     track: list = field(default_factory=list)
+    # True once any sampled detection fell inside the camera's detect box (or the
+    # camera has no box). Recording is always full-frame; this flag only gates
+    # the Telegram notification, so out-of-box activity is saved but not pushed.
+    in_region: bool = False
 
     def add(self, offset_s: float, n_person: int, n_vehicle: int,
             frame: "np.ndarray", dets: list) -> None:
@@ -121,6 +125,11 @@ class EventClip:
     # `presence_seconds` is the total wall span of the whole presence so far.
     presence_state: str = "single"
     presence_seconds: float = 0.0
+    # Whether any detection in this clip fell inside the camera's detect box
+    # (True when no box is set). The notifier skips pushes for out-of-box clips;
+    # the clip itself is still written to the gallery. Default True so any other
+    # construction path keeps notifying.
+    in_region: bool = True
     # Presence-session grouping (v0.4.21). All cap-split chunks of ONE
     # continuous presence share a `session_id`; `session_index` is their
     # 0-based order within the session; `session_final` is True on the last
@@ -408,6 +417,7 @@ def write_event(
         "vehicle_conf": round(ev.peak_vehicle_conf, 4),
         "duration_s": round(clip_dur, 2),
         "cams": cams_captured,
+        "in_region": ev.in_region,
         "tracks": tracks,
     }
     try:
@@ -427,6 +437,7 @@ def write_event(
         peak_person_conf=ev.peak_person_conf,
         peak_vehicle_conf=ev.peak_vehicle_conf,
         label=label,
+        in_region=ev.in_region,
     )
 
 
@@ -458,6 +469,7 @@ def _merge_pending(parts: list[ChainPart]) -> PendingEvent:
         merged.peak_vehicle = max(merged.peak_vehicle, ev.peak_vehicle)
         merged.peak_person_conf = max(merged.peak_person_conf, ev.peak_person_conf)
         merged.peak_vehicle_conf = max(merged.peak_vehicle_conf, ev.peak_vehicle_conf)
+        merged.in_region = merged.in_region or ev.in_region
         if ev._best_score > merged._best_score:
             merged._best_score = ev._best_score
             merged.best_frame = ev.best_frame
@@ -636,6 +648,7 @@ def write_event_chain(
         "vehicle_conf": round(merged.peak_vehicle_conf, 4),
         "duration_s": round(total_dur, 2),
         "cams": cams_captured,
+        "in_region": merged.in_region,
         "segments": len(parts),
         "source_segments": source_segments,
         "presence_state": presence_state,
@@ -662,6 +675,7 @@ def write_event_chain(
         peak_person_conf=merged.peak_person_conf,
         peak_vehicle_conf=merged.peak_vehicle_conf,
         label=label,
+        in_region=merged.in_region,
         presence_state=presence_state,
         presence_seconds=presence_seconds,
         session_id=session_id,

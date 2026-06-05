@@ -650,6 +650,7 @@ class MainWindow(QMainWindow):
             hold_timeout_s=self._settings.event_hold_timeout_s,
             parent=self,
         )
+        self._analyzer.set_regions(self._detect_regions)
         self._analyzer.totals_changed.connect(self._on_ai_totals)
         self._analyzer.event_extracted.connect(self._on_event_extracted)
         self._analyzer.start()
@@ -677,6 +678,8 @@ class MainWindow(QMainWindow):
         self._detect_regions[cam_index] = tile.detect_region()
         dr.save(self._settings.env_path, self._detect_regions)
         self._live_detector.set_regions(self._detect_regions)
+        if self._analyzer is not None:
+            self._analyzer.set_regions(self._detect_regions)
         bus.info("LIVE", f"cam{cam_index}: live detect zone updated")
         # refresh the armed count in the status bar without waiting for a scan
         self._status_ai.setText(self._ai_status_text(0, 0))

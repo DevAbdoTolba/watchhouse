@@ -11,25 +11,6 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 
 ## Open
 
-### BUG-001 — Telegram alert occasionally sent twice
-- **Symptom:** the same alert/photo sometimes arrives in Telegram twice.
-- **Status:** OPEN — cause unconfirmed (intermittent, hard to reproduce).
-- **Suspected causes (hypotheses):**
-  1. Two notification paths firing for one moment: the instant LIVE photo
-     (`notify_live`) **and** the later segment EVENT alert (`notify`) — these are
-     by design two different messages, but for a single subject they can *look*
-     like a duplicate. Need to confirm whether the two are truly identical or
-     just close in time.
-  2. A segment processed twice: `RecorderSupervisor._scan_for_closed_segments`
-     could emit `segment_closed` for the same file more than once (filesystem
-     watcher race), leading the analyzer to extract + notify the same event
-     twice.
-  3. Poller `getUpdates` offset handling re-delivering an update (would double a
-     *reply*, not the initial alert).
-- **Next step:** add a debug log tag on every Telegram send (path + event folder
-  + timestamp) and watch for two sends with the same folder/epoch. Decide on a
-  short dedupe window keyed by (event-folder | cam+epoch) once the path is known.
-
 ### BUG-002 — "Other angles" never sent, no matter how long I wait
 - **Symptom:** reply to a clip to get the other camera angles → they never
   arrive, even after waiting well past the segment-close delay.
@@ -56,4 +37,32 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 
 ## Fixed
 
-_(move resolved bugs here, keeping the entry + the fix commit)_
+### BUG-001 — Telegram alert sent twice (≈300 pushes/day for ~150 events)
+- **Symptom:** every event produced two pushes — an instant one with the correct
+  time, then a second ~2–3 min later showing the *same old time* and a detection
+  *outside* the per-camera detect box. ~2× the notifications for the real event
+  count.
+- **Status:** FIXED v0.4.61 (commit on `main`). Hypothesis #1 was correct, and
+  it was systematic (every event), not intermittent.
+- **Root cause:** two independent producers notified for one moment — the live
+  tier (`notify_live`, instant, box-filtered) **and** the segment/evidence tier
+  (`notify` via `_on_event_extracted`, ~segment-length late, reusing the event's
+  original `start_at` = the "same old time"). The segment tier *never applied the
+  detect box*, so it also pushed the very detections the box was meant to exclude
+  (the out-of-box image). Dedupe alone couldn't catch those — they have no live
+  alert to dedupe against (the live tier already filtered them out), so the box
+  filter had to extend to the segment tier too.
+- **Fix (two parts):**
+  1. **Box now gates notifications on both tiers.** The analyzer tags each event
+     with `in_region` (any sampled detection overlapping the camera's box; True
+     when no box). Recording stays full-frame — `in_region` only gates the push.
+     The notifier skips out-of-box clips (`events.py`, `analyzer.py`,
+     `main_window` wires `set_regions` to the analyzer).
+  2. **Smart cross-tier dedupe.** `notify_live` records the alert time per camera;
+     `notify` skips an arrival (`started`/`single`) when a live alert fired within
+     60 s of the event's start. An arrival the live tier *missed* still sends as a
+     safety net. `ongoing`/`ended` pings are never deduped. Window kept under the
+     2-min leave/return threshold so a genuine re-entry isn't swallowed.
+- **Verified:** 11/11 offscreen checks through real `notify`/`notify_live`
+  (box gate, dedupe window edges, safety-net, ongoing/ended exemption) + event
+  dataclass flag-threading checks.

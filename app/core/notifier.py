@@ -331,6 +331,10 @@ class TelegramNotifier(QObject):
         self._post_roll_s = post_roll_s
         self._cam_labels: dict[int, str] = {}
         self._last_sent: dict[int, float] = {}
+        # Recent live-tier alert times (epoch) per camera, for cross-tier
+        # dedupe: when the segment tier later extracts the same arrival, the
+        # live alert already covered it, so we skip the duplicate push.
+        self._live_alerts: dict[int, list[float]] = {}
         self._pool = QThreadPool.globalInstance()
         self._map = TelegramMap(state_dir, cap=map_cap)
         self._poller: "TelegramPoller | None" = None
@@ -406,10 +410,22 @@ class TelegramNotifier(QObject):
         self._min_interval - and they can be silenced entirely via config."""
         if not self.enabled:
             return
+        cam_id = getattr(clip, "cam_id", 0)
         state = getattr(clip, "presence_state", "single")
+        # The detect box gates NOTIFICATIONS, not recording: an event whose
+        # activity never entered the box is still saved to the gallery, just
+        # not pushed to Telegram (mirrors the live tier's box filter).
+        if not getattr(clip, "in_region", True):
+            bus.info("TG", f"cam{cam_id}: event outside detect box - not pushed")
+            return
+        # Cross-tier dedupe: the instant live alert already covered this arrival,
+        # so skip the duplicate segment push. An arrival the live tier missed
+        # (none recorded near this time) still goes out as a safety net.
+        if state in ("started", "single") and self._live_covered(cam_id, clip):
+            bus.info("TG", f"cam{cam_id}: arrival already sent live - not re-pushed")
+            return
         if state == "ongoing" and not self._notify_ongoing:
             return  # user opted out of the recurring still-present pings
-        cam_id = getattr(clip, "cam_id", 0)
         now = time.monotonic()
         if state == "ongoing":
             last = self._last_sent.get(cam_id, 0.0)
@@ -443,6 +459,7 @@ class TelegramNotifier(QObject):
         still being prepared so they can reply again shortly."""
         if not self.enabled:
             return
+        self._record_live_alert(cam_id)  # for cross-tier dedupe in notify()
         when = time.strftime("%H:%M:%S")
         caption = tg.t(self._lang, "alert_live", where=cam_label, when=when)
         thumb = Path(thumb_path) if thumb_path else None
@@ -451,6 +468,33 @@ class TelegramNotifier(QObject):
         self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
                                    tmap=tmap, cam=cam_id, kind="live",
                                    t=time.time(), markup=markup))
+
+    # An extracted arrival within this many seconds of a live alert on the same
+    # camera is the SAME arrival - skip the segment push. Kept well under the
+    # 2-minute leave/return threshold so a genuine re-entry the live tier missed
+    # still gets its own (safety-net) push.
+    _LIVE_DEDUP_WINDOW_S = 60.0
+    _LIVE_ALERT_TTL_S = 600.0  # forget live-alert times after 10 min
+
+    def _record_live_alert(self, cam_id: int) -> None:
+        now = time.time()
+        lst = self._live_alerts.setdefault(cam_id, [])
+        lst.append(now)
+        cutoff = now - self._LIVE_ALERT_TTL_S
+        self._live_alerts[cam_id] = [t for t in lst if t >= cutoff]
+
+    def _live_covered(self, cam_id: int, clip) -> bool:
+        """True if a live alert fired on this camera close enough to the event's
+        start to be the same arrival (so the segment push would be a duplicate)."""
+        when = getattr(clip, "start_at", None)
+        if when is None:
+            return False
+        try:
+            ev_epoch = when.timestamp()
+        except (AttributeError, ValueError, OverflowError, OSError):
+            return False
+        return any(abs(t - ev_epoch) <= self._LIVE_DEDUP_WINDOW_S
+                   for t in self._live_alerts.get(cam_id, ()))
 
     def send_quick_clip(self, cam_id: int, cam_label: str, folder: str) -> None:
         """Auto-push the instant quick clip (the ~30s pre-event-buffer video)

@@ -27,6 +27,7 @@ from pathlib import Path
 import cv2
 from PySide6.QtCore import QThread, Signal
 
+from app.core import detect_regions as dr
 from app.core import events as evt
 from app.core.detect import Detector
 from app.core.event_stitcher import EventStitcher, SegmentScan
@@ -99,6 +100,11 @@ class SegmentAnalyzer(QThread):
         # Cameras that may *trigger* events. None = all armed (the default
         # on startup). Set live from the UI; reads are atomic enough.
         self._armed = set(armed) if armed is not None else None
+        # Per-camera detect box (normalized rect). Mirrors the live tier: it
+        # does NOT change what gets recorded (full evidence), only flags whether
+        # an event's activity touched the box, so the notifier can skip pushes
+        # for out-of-box activity. Empty = no boxes (everything counts).
+        self._regions: dict[int, tuple] = {}
         self._queue: "queue.Queue[Path | None]" = queue.Queue()
         self._stop = False
         self._person_segments = 0
@@ -119,6 +125,26 @@ class SegmentAnalyzer(QThread):
     def set_armed(self, armed: set[int]) -> None:
         """Update which cameras trigger event extraction (live, thread-safe)."""
         self._armed = set(armed)
+
+    def set_regions(self, regions: dict) -> None:
+        """Update per-camera detect boxes (live, thread-safe). Same boxes the
+        live tier uses; here they only flag whether an event touched the box."""
+        self._regions = dict(regions or {})
+
+    def _in_region(self, cam_id: int, frame, dets: list) -> bool:
+        """True if any person/vehicle detection overlaps this camera's box, or
+        the camera has no box. Used only to flag the event for notification -
+        recording stays full-frame regardless."""
+        region = self._regions.get(cam_id)
+        if region is None:
+            return True
+        h, w = frame.shape[:2]
+        if not (w and h):
+            return True
+        return any(
+            dr.overlaps(region, d.x1 / w, d.y1 / h, d.x2 / w, d.y2 / h)
+            for d in dets if d.is_person or d.is_vehicle
+        )
 
     def _write_chain(self, parts: list, presence_state: str = "single",
                      presence_seconds: float = 0.0,
@@ -250,6 +276,11 @@ class SegmentAnalyzer(QThread):
                         cam_id=cam_id, t_start=offset_s, t_end=offset_s
                     )
                 pending.add(offset_s, n_person, n_vehicle, frame.copy(), dets)
+                # Recording stays full-frame; this only marks whether the
+                # activity touched the detect box, so the notifier can skip
+                # out-of-box pushes (the event is still saved to the gallery).
+                if self._in_region(cam_id, frame, dets):
+                    pending.in_region = True
 
         idx = 0
         last_idx = -1
