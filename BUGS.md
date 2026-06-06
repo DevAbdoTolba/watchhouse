@@ -104,8 +104,16 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 - **Symptom (06/06):** ~40 images of noise/clutter flagged as a person, plus a
   fresh false person detection. yolov8n on a grainy night DVR sub-stream invents
   people.
-- **Status:** MITIGATED v0.4.63 — two configurable guards added; effectiveness on
-  the user's real night footage still to be confirmed (tunable).
+- **Status:** FIXED v0.4.65 — confirmed against real footage. (v0.4.63's global
+  guards were insufficient: this bag is a *confident* static FP, not low-conf.)
+- **What actually solved it — per-camera 'person' floor:** measured cam4's bin
+  bags over 168 events: the bag peaks ~0.76 while real people there hit 0.80+ in
+  totally different boxes (IoU~0). A per-camera floor `DETECTION_PERSON_CONF_BY_CAM`
+  (set `4:0.78`) applied in BOTH tiers. Replay over the day's real events: **158
+  bag detections killed, all 14 real-people events (0.80–0.96) survive.** Other
+  cameras keep the normal 0.55 floor so distant people aren't lost.
+  Lesson: a confident static false positive can't be beaten by a *global* number
+  or box-size — measure ITS ceiling and cap that one camera just above it.
 - **Root cause:** the only gate was a single confidence threshold (0.35 batch /
   0.40 live) over all classes. The 'person' class is the noisiest, and tiny
   specks pass when confidence is moderate.

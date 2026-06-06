@@ -79,6 +79,7 @@ class SegmentAnalyzer(QThread):
         model_path: Path,
         conf: float = 0.35,
         person_conf: float = 0.0,
+        person_conf_by_cam: dict | None = None,
         min_box_frac: float = 0.0,
         sample_seconds: float = 1.0,
         event_cfg: "evt.EventConfig | None" = None,
@@ -94,6 +95,9 @@ class SegmentAnalyzer(QThread):
         self._detector = Detector(model_path, conf_threshold=conf,
                                   min_person_conf=person_conf,
                                   min_box_frac=min_box_frac)
+        # Per-camera 'person' floor for cameras with a confident static FP
+        # (e.g. cam4's bin bags). Applied here since the Detector is shared.
+        self._person_floor_by_cam = dict(person_conf_by_cam or {})
         self._sample_seconds = max(0.2, sample_seconds)
         self._event_cfg = event_cfg or evt.EventConfig()
         self._max_duration_s = max_duration_s
@@ -260,10 +264,15 @@ class SegmentAnalyzer(QThread):
         frames_sampled = person_frames = vehicle_frames = 0
         max_persons = max_vehicles = 0
 
+        person_floor = self._person_floor_by_cam.get(cam_id, 0.0)
+
         def _consume(frame, offset_s: float) -> None:
             nonlocal pending, frames_sampled, person_frames, vehicle_frames
             nonlocal max_persons, max_vehicles
             dets = self._detector.detect(frame)
+            if person_floor:
+                dets = [d for d in dets
+                        if not (d.is_person and d.confidence < person_floor)]
             n_person = sum(1 for d in dets if d.is_person)
             n_vehicle = sum(1 for d in dets if d.is_vehicle)
             frames_sampled += 1

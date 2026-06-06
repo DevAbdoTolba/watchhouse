@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
             clip_retention=settings.telegram_map_cap,
             person_conf=settings.detection_person_conf,
             min_box_frac=settings.detection_min_box_frac,
+            person_conf_by_cam=settings.detection_person_conf_by_cam,
             parent=self,
         )
         self._live_detector.live_alert.connect(self._on_live_alert)
@@ -681,6 +682,7 @@ class MainWindow(QMainWindow):
             model_path=model,
             conf=self._settings.detection_conf,
             person_conf=self._settings.detection_person_conf,
+            person_conf_by_cam=self._settings.detection_person_conf_by_cam,
             min_box_frac=self._settings.detection_min_box_frac,
             sample_seconds=self._settings.detection_sample_seconds,
             event_cfg=event_cfg,

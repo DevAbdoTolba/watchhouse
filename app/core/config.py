@@ -75,6 +75,7 @@ class Settings:
     detection_enabled: bool
     detection_conf: float
     detection_person_conf: float    # higher floor just for the noisy 'person' class
+    detection_person_conf_by_cam: dict  # {cam: floor} override for noisy cameras
     detection_min_box_frac: float   # drop boxes smaller than this frac of frame side
     detection_sample_seconds: float
     detection_model: Path
@@ -148,6 +149,7 @@ class Settings:
             detection_enabled=_truthy(os.environ.get("DETECTION_ENABLED", "1")),
             detection_conf=float(os.environ.get("DETECTION_CONF", "0.35")),
             detection_person_conf=float(os.environ.get("DETECTION_PERSON_CONF", "0.55")),
+            detection_person_conf_by_cam=_person_conf_by_cam(),
             detection_min_box_frac=float(os.environ.get("DETECTION_MIN_BOX_FRAC", "0.07")),
             detection_sample_seconds=float(os.environ.get("DETECTION_SAMPLE_SECONDS", "1.0")),
             detection_model=_resolve_model_path(os.environ.get("DETECTION_MODEL")),
@@ -239,6 +241,24 @@ def _detection_cameras() -> tuple[int, ...]:
         return (1, 2, 3, 4)
     out = [int(p) for p in (s.strip() for s in raw.split(",")) if p.isdigit()]
     return tuple(out) if out else (1, 2, 3, 4)
+
+
+def _person_conf_by_cam() -> dict:
+    """Per-camera 'person' confidence floor for cameras with a confident static
+    false positive (e.g. cam4's bin bags peak ~0.76 while real people hit 0.80+).
+    `DETECTION_PERSON_CONF_BY_CAM` is "cam:floor" pairs, e.g. "4:0.78,2:0.6"."""
+    out: dict[int, float] = {}
+    raw = os.environ.get("DETECTION_PERSON_CONF_BY_CAM", "").strip()
+    for part in raw.split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        cam, _, val = part.partition(":")
+        try:
+            out[int(cam.strip())] = float(val.strip())
+        except ValueError:
+            continue
+    return out
 
 
 def _retention_minutes() -> int:

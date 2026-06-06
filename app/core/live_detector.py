@@ -222,11 +222,14 @@ class LiveDetector(QObject):
                  pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
                  max_clip_s: float = 30.0, clip_retention: int = 5000,
                  person_conf: float = 0.0, min_box_frac: float = 0.0,
+                 person_conf_by_cam: dict | None = None,
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._detector = Detector(model_path, conf_threshold=conf,
                                   min_person_conf=person_conf,
                                   min_box_frac=min_box_frac)
+        # Per-camera 'person' floor for cameras with a confident static FP.
+        self._person_floor_by_cam = dict(person_conf_by_cam or {})
         self._armed = set(armed)
         self._cooldown = max(1.0, cooldown_s)
         # Quick clips live in their OWN dir (NOT events/), so the Events gallery -
@@ -329,6 +332,14 @@ class LiveDetector(QObject):
         self._busy = False
         if not dets:
             return
+        # Per-camera 'person' floor: drop low-confidence people on cameras with a
+        # confident static false positive (e.g. cam4's bin bags peak ~0.76).
+        floor = self._person_floor_by_cam.get(cam_id, 0.0)
+        if floor:
+            dets = [d for d in dets
+                    if not (d.is_person and d.confidence < floor)]
+            if not dets:
+                return
         # Detect-zone filter: keep only detections overlapping this camera's
         # rectangle, so an edge sliver (e.g. just the toes) doesn't fire.
         region = self._regions.get(cam_id)
