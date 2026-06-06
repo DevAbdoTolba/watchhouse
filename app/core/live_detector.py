@@ -221,9 +221,12 @@ class LiveDetector(QObject):
                  quick_clip_enabled: bool = True,
                  pre_roll_s: float = 10.0, post_roll_s: float = 20.0,
                  max_clip_s: float = 30.0, clip_retention: int = 5000,
+                 person_conf: float = 0.0, min_box_frac: float = 0.0,
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._detector = Detector(model_path, conf_threshold=conf)
+        self._detector = Detector(model_path, conf_threshold=conf,
+                                  min_person_conf=person_conf,
+                                  min_box_frac=min_box_frac)
         self._armed = set(armed)
         self._cooldown = max(1.0, cooldown_s)
         # Quick clips live in their OWN dir (NOT events/), so the Events gallery -

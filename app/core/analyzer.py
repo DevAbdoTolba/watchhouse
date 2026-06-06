@@ -78,6 +78,8 @@ class SegmentAnalyzer(QThread):
         self,
         model_path: Path,
         conf: float = 0.35,
+        person_conf: float = 0.0,
+        min_box_frac: float = 0.0,
         sample_seconds: float = 1.0,
         event_cfg: "evt.EventConfig | None" = None,
         events_dir: Path | None = None,
@@ -89,7 +91,9 @@ class SegmentAnalyzer(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._detector = Detector(model_path, conf_threshold=conf)
+        self._detector = Detector(model_path, conf_threshold=conf,
+                                  min_person_conf=person_conf,
+                                  min_box_frac=min_box_frac)
         self._sample_seconds = max(0.2, sample_seconds)
         self._event_cfg = event_cfg or evt.EventConfig()
         self._max_duration_s = max_duration_s

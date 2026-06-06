@@ -74,6 +74,8 @@ class Settings:
     # Detection (v0.4+)
     detection_enabled: bool
     detection_conf: float
+    detection_person_conf: float    # higher floor just for the noisy 'person' class
+    detection_min_box_frac: float   # drop boxes smaller than this frac of frame side
     detection_sample_seconds: float
     detection_model: Path
     detection_cameras: tuple[int, ...]  # cameras armed for events on startup
@@ -142,6 +144,8 @@ class Settings:
             recording_retention_minutes=_retention_minutes(),
             detection_enabled=_truthy(os.environ.get("DETECTION_ENABLED", "1")),
             detection_conf=float(os.environ.get("DETECTION_CONF", "0.35")),
+            detection_person_conf=float(os.environ.get("DETECTION_PERSON_CONF", "0.55")),
+            detection_min_box_frac=float(os.environ.get("DETECTION_MIN_BOX_FRAC", "0.07")),
             detection_sample_seconds=float(os.environ.get("DETECTION_SAMPLE_SECONDS", "1.0")),
             detection_model=_resolve_model_path(os.environ.get("DETECTION_MODEL")),
             detection_cameras=_detection_cameras(),

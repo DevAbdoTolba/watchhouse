@@ -75,13 +75,31 @@ class Detector:
         model_path: Path,
         conf_threshold: float = 0.35,
         iou_threshold: float = 0.5,
+        min_person_conf: float = 0.0,
+        min_box_frac: float = 0.0,
     ) -> None:
         self._model_path = Path(model_path)
         self._conf = conf_threshold
         self._iou = iou_threshold
+        # False-positive guards (0 = disabled): a higher confidence floor JUST
+        # for the noisy 'person' class, and a minimum box size (as a fraction of
+        # the frame's larger side) to drop tiny specks that yolov8n calls people
+        # on a grainy night sub-stream.
+        self._min_person_conf = max(0.0, min_person_conf)
+        self._min_box_frac = max(0.0, min_box_frac)
         self._session = None
         self._input_name: str | None = None
         self._imgsz = 640
+
+    def _passes_filters(self, d: "Detection", w: float, h: float) -> bool:
+        """False-positive guards applied after detection (see __init__)."""
+        if d.is_person and d.confidence < self._min_person_conf:
+            return False
+        if self._min_box_frac > 0.0 and w > 0 and h > 0:
+            span = max((d.x2 - d.x1) / w, (d.y2 - d.y1) / h)
+            if span < self._min_box_frac:
+                return False
+        return True
 
     @property
     def available(self) -> bool:
@@ -148,15 +166,15 @@ class Detector:
         results: list[Detection] = []
         for i in np.array(idxs).flatten() if len(idxs) > 0 else []:
             cid = int(class_ids[i])
-            results.append(
-                Detection(
-                    label=COCO_NAMES.get(cid, str(cid)),
-                    class_id=cid,
-                    confidence=float(confs[i]),
-                    x1=float(x1[i]),
-                    y1=float(y1[i]),
-                    x2=float(x2[i]),
-                    y2=float(y2[i]),
-                )
+            d = Detection(
+                label=COCO_NAMES.get(cid, str(cid)),
+                class_id=cid,
+                confidence=float(confs[i]),
+                x1=float(x1[i]),
+                y1=float(y1[i]),
+                x2=float(x2[i]),
+                y2=float(y2[i]),
             )
+            if self._passes_filters(d, w0, h0):
+                results.append(d)
         return results

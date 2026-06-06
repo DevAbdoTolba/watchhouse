@@ -117,6 +117,8 @@ class MainWindow(QMainWindow):
             post_roll_s=settings.live_post_roll_s,
             max_clip_s=settings.live_max_clip_s,
             clip_retention=settings.telegram_map_cap,
+            person_conf=settings.detection_person_conf,
+            min_box_frac=settings.detection_min_box_frac,
             parent=self,
         )
         self._live_detector.live_alert.connect(self._on_live_alert)
@@ -674,6 +676,8 @@ class MainWindow(QMainWindow):
         self._analyzer = SegmentAnalyzer(
             model_path=model,
             conf=self._settings.detection_conf,
+            person_conf=self._settings.detection_person_conf,
+            min_box_frac=self._settings.detection_min_box_frac,
             sample_seconds=self._settings.detection_sample_seconds,
             event_cfg=event_cfg,
             events_dir=self._settings.events_dir,
