@@ -37,6 +37,7 @@ from app.core.live_detector import LiveDetector
 from app.core.recorder import RecorderSupervisor
 from app.core.pins import Pins
 from app.core import detect_regions as dr
+from app.core import dvr_time
 from app.core import camera_links
 from app.core.collision import CollisionMatcher
 from app.ui.camera_names_dialog import CameraNamesDialog
@@ -53,6 +54,9 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: Settings) -> None:
         super().__init__()
         self._settings = settings
+        # Make every displayed time match the DVR's (non-DST) clock. Pure display
+        # shift; recording filenames/lookups stay on PC time.
+        dvr_time.set_offset_minutes(settings.dvr_time_offset_minutes)
         # Permanent-keep ('● KEEPING') state lives here (the live view) and is
         # persisted via Pins; the pruner and the playback timeline read the file.
         self._pins = Pins.load(settings.env_path)
@@ -442,7 +446,7 @@ class MainWindow(QMainWindow):
         m, s = divmod(rem, 60)
         mb = self._kept_size_bytes(kf.timestamp()) / 1024 / 1024
         self._keep_status.setText(
-            f"● {kf:%H:%M:%S} · {h}:{m:02d}:{s:02d} · {mb:.0f} MB")
+            f"● {dvr_time.shift(kf):%H:%M:%S} · {h}:{m:02d}:{s:02d} · {mb:.0f} MB")
 
     def _effective_cam_name(self, cam) -> str:
         """Custom name if set, else the camera's built-in location, else label."""
@@ -775,4 +779,4 @@ class MainWindow(QMainWindow):
 
     def _update_status_bar(self) -> None:
         from datetime import datetime
-        self._status_clock.setText(datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
+        self._status_clock.setText(dvr_time.now().strftime("%Y-%m-%d  %H:%M:%S"))

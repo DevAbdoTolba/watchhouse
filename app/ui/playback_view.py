@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import camera_names
+from app.core import dvr_time
 from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
 from app.core.pins import Pins
@@ -924,7 +925,7 @@ class PlaybackView(QWidget):
             else:
                 tile.pause()
         self._cursor_label.setText(
-            f"{ev.start_at:%Y-%m-%d %H:%M:%S}  ·  cam{ev.trigger_cam}  ·  {ev.pretty}"
+            f"{dvr_time.shift(ev.start_at):%Y-%m-%d %H:%M:%S}  ·  cam{ev.trigger_cam}  ·  {ev.pretty}"
         )
 
     @Slot()
@@ -1462,12 +1463,12 @@ class PlaybackView(QWidget):
         if ev is None:
             return
         self._cursor_label.setText(
-            f"{ev.start_at:%H:%M:%S}  +{self._event_pos:0.0f}s  ·  "
+            f"{dvr_time.shift(ev.start_at):%H:%M:%S}  +{self._event_pos:0.0f}s  ·  "
             f"cam{ev.trigger_cam}  ·  {ev.pretty}"
         )
 
     def _update_cursor_label(self) -> None:
-        self._cursor_label.setText(self._cursor.strftime("%Y-%m-%d  %H:%M:%S"))
+        self._cursor_label.setText(dvr_time.shift(self._cursor).strftime("%Y-%m-%d  %H:%M:%S"))
 
     def shutdown(self) -> None:
         self._refresh_timer.stop()

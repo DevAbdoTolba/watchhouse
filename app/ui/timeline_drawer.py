@@ -32,6 +32,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from app.core.clip_library import Clip
+from app.core import dvr_time
 from app.ui import theme
 
 
@@ -136,7 +137,8 @@ class _Strip(QWidget):
         return 14_400
 
     def _format_tick(self, s: float, step: int) -> str:
-        s = int(s) % 86_400
+        # Label only: shift to DVR display time. Tick POSITION uses raw `s`.
+        s = int(dvr_time.shift_seconds_of_day(s)) % 86_400
         h, rem = divmod(s, 3600)
         m, sec = divmod(rem, 60)
         if step >= 3600:

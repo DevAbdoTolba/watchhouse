@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import queue
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -29,11 +31,12 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThread, QThreadPool
+from PySide6.QtCore import QObject, QRunnable, QThread
 
 from app.core.log import bus
 from app.core.telegram_map import TelegramMap
 from app.core import telegram_text as tg
+from app.core import dvr_time
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _TIMEOUT_S = 20
@@ -423,7 +426,16 @@ class TelegramNotifier(QObject):
         # dedupe: when the segment tier later extracts the same arrival, the
         # live alert already covered it, so we skip the duplicate push.
         self._live_alerts: dict[int, list[float]] = {}
-        self._pool = QThreadPool.globalInstance()
+        # Ordered priority send queue: ONE worker drains it so messages arrive in
+        # order (the global QThreadPool ran sends in parallel → reordered them).
+        # Two lanes by priority: photos/text (0) jump ahead of slow video uploads
+        # (1) so an instant alert never waits behind a clip; FIFO within a lane
+        # via a sequence tiebreak. Each item is (prio, seq, callable).
+        self._send_q: "queue.PriorityQueue" = queue.PriorityQueue()
+        self._send_seq = 0
+        self._send_thread = threading.Thread(
+            target=self._send_loop, name="tg-sender", daemon=True)
+        self._send_thread.start()
         self._map = TelegramMap(state_dir, cap=map_cap)
         self._poller: "TelegramPoller | None" = None
         self.enabled = bool(self._token and self._chat_id)
@@ -485,9 +497,30 @@ class TelegramNotifier(QObject):
             self._poller.wait(12_000)
             self._poller = None
 
+    def _send_loop(self) -> None:
+        """Drain the priority queue, one send at a time (photos before videos)."""
+        while True:
+            _prio, _seq, fn = self._send_q.get()
+            if fn is None:
+                break
+            try:
+                fn()
+            except Exception as e:  # never let one bad send kill the sender
+                bus.warn("TG", f"send task failed: {e!s}")
+
+    def _enqueue(self, task, prio: int = 0) -> None:
+        """Queue a QRunnable-style send. prio 0 = photo/text (fast lane),
+        prio 1 = video upload (slow lane, never blocks a fast-lane alert)."""
+        self._send_seq += 1
+        self._send_q.put((prio, self._send_seq, task.run))
+
     def shutdown(self) -> None:
-        """Stop the reply listener; call from the window's closeEvent."""
+        """Stop the reply listener and the send worker; call from closeEvent."""
         self._stop_poller()
+        # Sentinel after any queued sends (prio 9) so they flush first; the join
+        # timeout bounds it if an upload is stuck.
+        self._send_q.put((9, self._send_seq + 1, None))
+        self._send_thread.join(timeout=5.0)
 
     def notify(self, clip, cam_label: str | None = None) -> None:
         """Queue an alert for an extracted event. Best-effort, non-blocking.
@@ -532,9 +565,9 @@ class TelegramNotifier(QObject):
         # clip; otherwise this is a plain fire-and-forget push.
         tmap = self._map if self._commands else None
         markup = alert_markup(self._lang) if tmap is not None else None
-        self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
-                                   tmap=tmap, folder=folder_s, cam=cam_id,
-                                   markup=markup))
+        self._enqueue(_SendTask(self._token, self._chat_id, caption, thumb,
+                                tmap=tmap, folder=folder_s, cam=cam_id,
+                                markup=markup))
 
     def notify_live(self, cam_id: int, cam_label: str, title: str,
                     thumb_path: str) -> None:
@@ -548,14 +581,14 @@ class TelegramNotifier(QObject):
         if not self.enabled:
             return
         self._record_live_alert(cam_id)  # for cross-tier dedupe in notify()
-        when = time.strftime("%H:%M:%S")
+        when = dvr_time.now().strftime("%H:%M:%S")
         caption = tg.t(self._lang, "alert_live", where=cam_label, when=when)
         thumb = Path(thumb_path) if thumb_path else None
         tmap = self._map if self._commands else None
         markup = alert_markup(self._lang) if tmap is not None else None
-        self._pool.start(_SendTask(self._token, self._chat_id, caption, thumb,
-                                   tmap=tmap, cam=cam_id, kind="live",
-                                   t=time.time(), markup=markup))
+        self._enqueue(_SendTask(self._token, self._chat_id, caption, thumb,
+                                tmap=tmap, cam=cam_id, kind="live",
+                                t=time.time(), markup=markup))
 
     # An extracted arrival within this many seconds of a live alert on the same
     # camera is the SAME arrival - skip the segment push. Kept well under the
@@ -590,10 +623,10 @@ class TelegramNotifier(QObject):
         message is recorded so a reply can pull other angles later."""
         if not self.enabled:
             return
-        self._pool.start(_QuickClipTask(self._token, self._chat_id, cam_id,
-                                        cam_label, folder,
-                                        self._map if self._commands else None,
-                                        lang=self._lang))
+        self._enqueue(_QuickClipTask(self._token, self._chat_id, cam_id,
+                                     cam_label, folder,
+                                     self._map if self._commands else None,
+                                     lang=self._lang), prio=1)
 
     def notify_collision(self, name: str, direction: str, from_clip,
                          to_clip) -> None:
@@ -602,7 +635,7 @@ class TelegramNotifier(QObject):
         Replaces the two separate per-camera segment pushes."""
         if not self.enabled:
             return
-        when = getattr(from_clip, "start_at", None)
+        when = dvr_time.shift(getattr(from_clip, "start_at", None))
         when_s = when.strftime("%H:%M:%S") if when is not None else ""
         caption = tg.t(self._lang, "collision", name=name, direction=direction,
                        when=when_s)
@@ -612,8 +645,8 @@ class TelegramNotifier(QObject):
         folder_s = str(folder) if folder is not None else ""
         cam = getattr(from_clip, "cam_id", 0)
         tmap = self._map if self._commands else None
-        self._pool.start(_CollisionTask(self._token, self._chat_id, caption,
-                                        thumbs, tmap, folder_s, cam))
+        self._enqueue(_CollisionTask(self._token, self._chat_id, caption,
+                                     thumbs, tmap, folder_s, cam))
 
     @staticmethod
     def _what(clip) -> str:
@@ -636,7 +669,7 @@ class TelegramNotifier(QObject):
 
     def _caption(self, clip, cam_label: str | None) -> str:
         where = cam_label or f"camera {getattr(clip, 'cam_id', '?')}"
-        when = getattr(clip, "start_at", None)
+        when = dvr_time.shift(getattr(clip, "start_at", None))
         when_s = when.strftime("%H:%M:%S") if when is not None else ""
         state = getattr(clip, "presence_state", "single")
         secs = getattr(clip, "presence_seconds", 0.0)
@@ -1089,7 +1122,7 @@ class TelegramPoller(QThread):
         cam = getattr(ev, "trigger_cam", 0)
         thumb = getattr(ev, "thumb", None)
         caption = tg.t(self._lang, "latest", where=self._label(cam),
-                       when=f"{ev.start_at:%H:%M:%S}")
+                       when=f"{dvr_time.shift(ev.start_at):%H:%M:%S}")
         if thumb and Path(thumb).is_file():
             result = api_send_photo(self._token, self._chat_id, caption, Path(thumb))
             if result.get("ok"):

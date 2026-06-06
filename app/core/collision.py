@@ -28,9 +28,9 @@ from app.core import camera_links as cl
 from app.core.log import bus
 
 # How long to hold a link-eligible event waiting for its partner from the other
-# camera. Segments are clock-aligned so siblings are analyzed back-to-back; this
-# only delays the (already minutes-late) segment notification, never the live tier.
-_GRACE_S = 45.0
+# camera. Segments are clock-aligned so siblings are analyzed back-to-back (a few
+# seconds apart), so a short hold suffices; keep it tight to avoid adding latency.
+_GRACE_S = 15.0
 # Timing slack around the transit window when matching two events by start time.
 _SLACK_BEFORE_S = 3.0   # the 'to' event may start slightly before the 'from'
 _MARGIN_AFTER_S = 6.0   # ...or a bit after the nominal transit time

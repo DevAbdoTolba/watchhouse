@@ -36,6 +36,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QPixmap
 
+from app.core import dvr_time
+
 ICON_SIZE = QSize(112, 63)
 PAGE_SIZE = 50
 _CACHE_CAP = 400  # bounded LRU of decoded thumbnails
@@ -211,10 +213,10 @@ class EventsModel(QAbstractListModel):
         best = max((m.person_pct for m in s.members), default=0) if s.members else 0
         conf = f"  ·  {best}% human" if s.peak_person and best else ""
         if s.count > 1:
-            span = f"{s.start_at:%H:%M:%S}–{s.end_at:%H:%M:%S}"
+            span = f"{dvr_time.shift(s.start_at):%H:%M:%S}–{dvr_time.shift(s.end_at):%H:%M:%S}"
             line2 = f"{cam_name} · {s.duration_label} · {s.count} clips"
         else:
-            span = f"{s.start_at:%H:%M:%S}"
+            span = f"{dvr_time.shift(s.start_at):%H:%M:%S}"
             angles = len(s.members[0].clips) if s.members else 0
             line2 = f"{cam_name} · {angles} angles"
         return f"{span}   {s.pretty}{conf}\n{line2}"

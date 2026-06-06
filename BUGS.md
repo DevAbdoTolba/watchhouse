@@ -34,73 +34,71 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
   segment found?, offset, ffmpeg rc) so we can see exactly where it bails.
 
 ### BUG-003 — Live alert photo delayed ~30 s (should be instant)
-- **Symptom (06/06):** the live-tier image arrives ~30 s after the movement,
-  not in real time.
-- **Status:** OPEN — cause unconfirmed.
-- **Suspected causes (hypotheses):**
-  1. CPU contention: the live detector and the segment analyzer both run yolov8n
-     on CPU. While the analyzer is grinding a closed segment, the live
-     `_busy`-gated inference starves and live frames back up → tens of seconds of
-     lag. (Live tier shares the machine, not a queue, with the batch tier.)
-  2. Send latency / pool backlog (see BUG-005): the alert is *produced* fast but
-     the HTTP send waits behind other pooled tasks.
-- **Next step:** timestamp the live path end-to-end (frame grab → detect done →
-  emit → send) and log the gaps; consider giving the live detector inference
-  priority / its own throttle independent of analyzer load.
-
-### BUG-004 — Quick clip cropped before the movement ends (< 30 s)
-- **Symptom (06/06):** the clip cuts off while the person is still moving, even
-  though it's under the 30 s cap.
-- **Status:** OPEN — likely cause known.
-- **Suspected cause:** the dynamic clip closes `post_roll` (LIVE_POST_ROLL_SECONDS,
-  default **3 s**) after the *last* sighting. A brief gap in detection (person
-  pauses, occluded, or a missed frame > 3 s) trips the close before they're
-  really gone. The cap (30 s) isn't the limiter — the short grace is.
-- **Next step:** raise the default grace (e.g. 3 → 6–8 s) and/or close only after
-  N consecutive empty samples rather than a single gap; confirm against a real
-  pause-mid-walk clip.
+- **Symptom (06/06):** the live-tier image arrives ~30 s after the movement.
+- **Status:** ADDRESSED v0.4.64 — confirm on the real system.
+- **Root cause (most likely):** send contention. Telegram sends ran on the global
+  QThreadPool alongside the live detector's `_InferTask`; a slow video upload
+  occupied pool threads, so live inference (and the photo send behind it) stalled.
+- **Fix:** sends moved OFF the global pool onto a dedicated ordered worker
+  (BUG-005), freeing the pool for live inference; and the sender is a *priority*
+  queue so an instant photo never waits behind a video upload. If 30 s latency
+  persists, the remaining suspect is yolov8n CPU contention with the segment
+  analyzer — next step would be giving live inference its own throttle/priority.
 
 ### BUG-005 — Duplicates, latency, and out-of-order Telegram messages
 - **Symptom (06/06):** messages duplicated, late, and not in chronological order.
-- **Status:** OPEN — cause unconfirmed; possible regression from recent work.
-- **Suspected causes (hypotheses):**
-  1. **Out-of-order:** every send is a separate `QRunnable` on the *global*
-     QThreadPool (parallel). They finish in arbitrary order → messages land out
-     of sequence. Fix direction: serialize sends through one ordered worker.
-  2. **Latency:** the new collision matcher holds link-eligible events up to
-     `grace_s` (45 s) before releasing/fusing — adds delay for linked cameras.
-     Also pool backlog under load.
-  3. **Duplicates:** re-check the dedupe interplay with the collision path and
-     any double `segment_closed` (filesystem-watcher race) re-extracting events.
-- **Next step:** add a single ordered send queue (preserve order, dedupe key on
-  it); reconsider the 45 s collision grace; log every send with its event key.
+- **Status:** PARTIAL v0.4.64 — out-of-order FIXED, latency REDUCED; duplicates
+  still under observation.
+- **Fixes applied:**
+  1. **Out-of-order → fixed:** sends were separate `QRunnable`s on the *global*
+     QThreadPool (parallel, arbitrary completion order). Now ONE ordered worker
+     thread drains a FIFO queue, so messages go out in the order produced
+     (`notifier._send_loop`/`_enqueue`; verified FIFO under a slow-first send).
+  2. **Latency → reduced:** collision matcher grace cut 45 s → 15 s (siblings are
+     analyzed back-to-back, so the long hold was unnecessary).
+- **Still open — duplicates:** not reproduced/confirmed. Candidate sources to
+  watch: live cooldown re-firing for a lingering person (≈ every 45 s, partly by
+  design) and live pings + the collision album for one crossing reading as
+  "duplicate". Next step: log every send with its event key and get one concrete
+  duplicate example (two sends, same folder/epoch) to pin the cause.
 
 ### BUG-006 — Message time ≠ recorder time (drift up to ~20 s)
-- **Symptom (06/06):** the time in the Telegram message differs from the time
-  burned into the recording by up to 20 s.
-- **Status:** OPEN — cause unconfirmed (separate from the 1 h DST gap, BUG-007).
-- **Suspected causes (hypotheses):**
-  1. PC clock vs DVR clock drift (no NTP sync between them).
-  2. The message shows the event/processing time, not the exact frame time;
-     segment-start + offset rounding could add seconds.
-- **Next step:** decide the single source of truth for "when" (frame wall-clock
-  from the segment), and measure PC↔DVR drift.
-
-### BUG-007 — DVR ignores DST → times 1 h off the DVR overlay
-- **Symptom (06/06):** message says 16:00 but the DVR shows 15:00. The DVR clock
-  does not observe summer time; our timestamps (system local time, with DST) are
-  1 h ahead of the DVR's burned-in time.
-- **Status:** OPEN — fix approach needs a decision.
-- **Fix options:** (a) a configurable `DVR_TIME_OFFSET` (minutes/hours) applied to
-  every displayed/messaged timestamp so they match the DVR; (b) auto-detect the
-  offset from the DVR. (a) is simple + robust; (b) is fragile. Leaning (a).
-- **Next step:** confirm offset approach with the user, then apply the offset at
-  the point timestamps are formatted for messages/UI (keep filenames as-is or
-  shift consistently — decide which clock owns the recordings).
+- **Symptom (06/06):** the Telegram message time differs from the burned-in
+  recording time by up to 20 s (this is on TOP of the 1 h DST gap, BUG-007).
+- **Status:** PARTIAL — the 1 h DST component is fixed (BUG-007); the residual
+  ~20 s is PC↔DVR clock drift, NOT something the app can correct cleanly.
+- **Fix / recommendation:** the displayed time is now the event's true frame
+  wall-clock (segment-start + offset), shifted by DVR_TIME_OFFSET. The remaining
+  seconds-level gap is the two devices' clocks drifting — point both at NTP, or
+  nudge DVR_TIME_OFFSET_MINUTES. No further code change planned.
 
 ---
 
 ## Fixed
+
+### BUG-007 — DVR ignores DST → all times 1 h off the DVR overlay
+- **Symptom (06/06):** message says 16:00 but the DVR shows 15:00; the DVR clock
+  doesn't observe summer time, so every app time ran 1 h ahead of the footage.
+- **Status:** FIXED v0.4.64.
+- **Fix:** new `dvr_time` module + `DVR_TIME_OFFSET_MINUTES` (set it to -60).
+  A pure DISPLAY shift applied to EVERY shown time — Telegram captions, the
+  events list, the timeline axis, the cursor/status clocks — so the whole app
+  reads in DVR time. Internals (recording filenames, segment lookup, pruning,
+  timeline positioning, seeking) stay on the raw PC clock, so nothing breaks.
+  Wired from Settings at startup. Verified: shift / seconds-of-day / midnight
+  wrap / passthrough unit checks.
+
+### BUG-004 — Quick clip cropped before the movement ends (< 30 s)
+- **Symptom (06/06):** the clip cuts off while the person is still moving, even
+  though it's under the 30 s cap.
+- **Status:** FIXED v0.4.64.
+- **Root cause:** the dynamic clip closed `post_roll` (LIVE_POST_ROLL_SECONDS,
+  default **3 s**) after the *last* sighting. A brief detection gap (pause,
+  occlusion, flicker > 3 s) tripped the close early; the 30 s cap was never the
+  limiter.
+- **Fix:** raised the default grace 3 → 7 s so brief pauses/flicker no longer cut
+  the clip (still capped at LIVE_MAX_CLIP_SECONDS). Tunable via
+  LIVE_POST_ROLL_SECONDS.
 
 ### BUG-008 — False positives: rubbish detected as "person" (URGENT)
 - **Symptom (06/06):** ~40 images of noise/clutter flagged as a person, plus a

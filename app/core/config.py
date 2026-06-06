@@ -79,6 +79,9 @@ class Settings:
     detection_sample_seconds: float
     detection_model: Path
     detection_cameras: tuple[int, ...]  # cameras armed for events on startup
+    # DVR display-time offset in minutes (the DVR ignores DST). Pure display
+    # shift applied to every shown time; internals stay on PC time. See dvr_time.
+    dvr_time_offset_minutes: float
     # Event extraction (v0.4.2)
     event_extraction_enabled: bool
     event_pre_roll_s: float
@@ -149,6 +152,7 @@ class Settings:
             detection_sample_seconds=float(os.environ.get("DETECTION_SAMPLE_SECONDS", "1.0")),
             detection_model=_resolve_model_path(os.environ.get("DETECTION_MODEL")),
             detection_cameras=_detection_cameras(),
+            dvr_time_offset_minutes=float(os.environ.get("DVR_TIME_OFFSET_MINUTES", "0")),
             event_extraction_enabled=_truthy(os.environ.get("EVENT_EXTRACTION_ENABLED", "1")),
             event_pre_roll_s=float(os.environ.get("EVENT_PRE_ROLL_SECONDS", "5")),
             event_post_roll_s=float(os.environ.get("EVENT_POST_ROLL_SECONDS", "5")),
@@ -167,7 +171,7 @@ class Settings:
             live_cooldown_s=float(os.environ.get("LIVE_COOLDOWN_SECONDS", "45")),
             live_quick_clip=_truthy(os.environ.get("LIVE_QUICK_CLIP", "1")),
             live_pre_roll_s=float(os.environ.get("LIVE_PRE_ROLL_SECONDS", "2")),
-            live_post_roll_s=float(os.environ.get("LIVE_POST_ROLL_SECONDS", "3")),
+            live_post_roll_s=float(os.environ.get("LIVE_POST_ROLL_SECONDS", "7")),
             live_max_clip_s=float(os.environ.get("LIVE_MAX_CLIP_SECONDS", "30")),
             live_autosend_clip=_truthy(os.environ.get("LIVE_AUTOSEND_CLIP", "0")),
             event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
