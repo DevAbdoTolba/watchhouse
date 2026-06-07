@@ -162,8 +162,12 @@ def _post_multipart(token: str, method: str, fields: dict[str, str],
         return json.loads(resp.read().decode("utf-8", "replace"))
 
 
-def api_send_message(token: str, chat_id: str, text: str) -> dict:
-    return _call(token, "sendMessage", {"chat_id": chat_id.strip(), "text": text})
+def api_send_message(token: str, chat_id: str, text: str,
+                     reply_to: int | None = None) -> dict:
+    payload = {"chat_id": chat_id.strip(), "text": text}
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    return _call(token, "sendMessage", payload)
 
 
 def alert_markup(lang: str, with_capture: bool = True) -> str:
@@ -180,15 +184,19 @@ def alert_markup(lang: str, with_capture: bool = True) -> str:
 
 
 def api_send_photo(token: str, chat_id: str, caption: str, path: Path,
-                   reply_markup: str | None = None) -> dict:
+                   reply_markup: str | None = None,
+                   reply_to: int | None = None) -> dict:
     fields = {"chat_id": chat_id.strip(), "caption": caption}
     if reply_markup:
         fields["reply_markup"] = reply_markup
+    if reply_to:
+        fields["reply_to_message_id"] = str(reply_to)
     return _post_multipart(token, "sendPhoto", fields, "photo", path)
 
 
 def api_send_video(token: str, chat_id: str, caption: str, path: Path,
-                   reply_markup: str | None = None) -> dict:
+                   reply_markup: str | None = None,
+                   reply_to: int | None = None) -> dict:
     """Upload an mp4 clip. Falls back to sendDocument when Telegram refuses the
     video (it won't transcode HEVC), so the clip is always at least downloadable.
     Guards the 49 MB bot upload cap. Returns the parsed API result dict."""
@@ -205,6 +213,9 @@ def api_send_video(token: str, chat_id: str, caption: str, path: Path,
     if reply_markup:
         video_fields["reply_markup"] = reply_markup
         doc_fields["reply_markup"] = reply_markup
+    if reply_to:
+        video_fields["reply_to_message_id"] = str(reply_to)
+        doc_fields["reply_to_message_id"] = str(reply_to)
     try:
         r = _post_multipart(token, "sendVideo", video_fields, "video", path)
         if r.get("ok"):
@@ -215,26 +226,31 @@ def api_send_video(token: str, chat_id: str, caption: str, path: Path,
 
 
 def api_send_media_group(token: str, chat_id: str, caption: str,
-                         paths: list) -> dict:
-    """Send 2+ photos as ONE album message (the caption rides on the first).
-    Falls back to a single sendPhoto when only one valid photo is given.
+                         paths: list, kind: str = "photo",
+                         reply_to: int | None = None) -> dict:
+    """Send 2+ photos OR videos as ONE album message (caption on the first item),
+    optionally as a reply to `reply_to`. Falls back to a single send for one item.
     Returns the API result; `result` is a LIST of the sent messages."""
     valid = [Path(p) for p in paths if p and Path(p).is_file()][:10]
     if not valid:
-        return {"ok": False, "description": "no photos"}
+        return {"ok": False, "description": "no media"}
     if len(valid) == 1:
-        return api_send_photo(token, chat_id, caption, valid[0])
+        if kind == "video":
+            return api_send_video(token, chat_id, caption, valid[0], reply_to=reply_to)
+        return api_send_photo(token, chat_id, caption, valid[0], reply_to=reply_to)
     media = []
     files: dict[str, Path] = {}
     for i, p in enumerate(valid):
-        key = f"photo{i}"
-        item = {"type": "photo", "media": f"attach://{key}"}
+        key = f"file{i}"
+        item = {"type": kind, "media": f"attach://{key}"}
         if i == 0:
             item["caption"] = caption
         media.append(item)
         files[key] = p
-    body, boundary = _encode_multipart_multi(
-        {"chat_id": chat_id.strip(), "media": json.dumps(media)}, files)
+    fields = {"chat_id": chat_id.strip(), "media": json.dumps(media)}
+    if reply_to:
+        fields["reply_to_message_id"] = str(reply_to)
+    body, boundary = _encode_multipart_multi(fields, files)
     url = _API.format(token=token.strip(), method="sendMediaGroup")
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
@@ -723,11 +739,10 @@ class TelegramPoller(QThread):
         # clip wasn't encoded yet. We hold (cam, alert-time) and auto-deliver the
         # moment the clip exists - no second reply needed, no wasted data.
         self._pending: list[dict] = []
-        # Pending sibling-angle cuts: an "all cameras" request asked for an angle
-        # whose recording segment wasn't finalized yet (still being written). We
-        # queue {folder, cam} and retry each poll cycle, so the user never has to
-        # tap again - the angle auto-arrives once the segment closes.
-        self._pending_cuts: list[dict] = []
+        # Pending angle requests that must wait for not-yet-finalized segments,
+        # delivered as ONE album (reply to the alert, attributed to the asker) the
+        # moment every angle is ready - so the user never has to tap again.
+        self._pending_reqs: list[dict] = []
 
     _PENDING_TTL_S = 1200.0  # stop waiting on a pending request after 20 min
     # Extra lead added to sibling cuts beyond the live pre-roll, to absorb the
@@ -804,9 +819,11 @@ class TelegramPoller(QThread):
             return  # SECURITY: only the linked chat may command the bot
         reply = msg.get("reply_to_message")
         if reply:
-            entry = self._map.lookup(int(reply.get("message_id", 0)))
+            anchor = int(reply.get("message_id", 0))
+            entry = self._map.lookup(anchor)
             if entry:
-                self._dispatch_reply(entry)
+                self._dispatch_reply(entry, anchor=anchor,
+                                     requester=self._who(msg.get("from")))
                 return
         text = (msg.get("text") or "").strip()
         if text.startswith("/"):
@@ -831,52 +848,52 @@ class TelegramPoller(QThread):
             return  # SECURITY: only the linked chat may command the bot
         cq_id = str(cq.get("id", ""))
         data = (cq.get("data") or "").strip()
-        entry = self._map.lookup(int(msg.get("message_id", 0)))
+        anchor = int(msg.get("message_id", 0))
+        entry = self._map.lookup(anchor)
         if not entry:
             self._answer_callback(cq_id, tg.t(self._lang, "cb_expired"))
             return
         self._answer_callback(cq_id, tg.t(self._lang, "cb_wait"))
-        self._dispatch_reply(entry, mode="all" if data == "all" else "capture")
+        self._dispatch_reply(entry, mode="all" if data == "all" else "capture",
+                             anchor=anchor, requester=self._who(cq.get("from")))
 
-    def _dispatch_reply(self, entry: dict, mode: str = "capture") -> None:
-        """Deliver an event's angles. mode 'capture' = progressive (first call ->
-        the detecting camera(s); each later call -> the next remaining angles).
-        mode 'all' = every angle not yet sent at once. State is per event folder,
-        so the thumbnail's buttons OR a sent clip's button advance the same event.
+    def _dispatch_reply(self, entry: dict, mode: str = "capture",
+                        anchor: int | None = None, requester: str = "") -> None:
+        """Deliver an event's angles as a REPLY to the alert message (`anchor`),
+        attributed to `requester`, so overlapping requests never get confused.
+        'all' = every angle as ONE album; 'capture' = the detecting camera(s).
+        Angles whose recording segment isn't finalized yet make the whole request
+        WAIT, then arrive together as one album - no partial dribble, no re-tap.
 
-        A LIVE alert (kind 'live') has no folder yet: resolve it to the matching
-        event clip if the segment tier has since extracted it, else queue it and
-        auto-send the moment it's ready (no second tap needed)."""
+        A LIVE alert (kind 'live') has no folder yet: resolve it, or queue + retry
+        (carrying the anchor + requester) the moment the clip exists."""
         if entry.get("k") == "live" and not entry.get("f"):
             cam = int(entry.get("c", 0))
             t = float(entry.get("t", 0.0))
             resolved = self._resolve_live_event(cam, t)
             if resolved is None:
-                self._add_pending(cam, t, mode)
+                self._add_pending(cam, t, mode, anchor, requester)
                 api_send_message(self._token, self._chat_id,
-                                 tg.t(self._lang, "preparing"))
+                                 tg.t(self._lang, "preparing"), reply_to=anchor)
                 return
             entry = {"f": str(resolved), "c": cam, "k": "thumb"}
 
         folder = Path(entry.get("f", ""))
         if not folder.is_dir():
             api_send_message(self._token, self._chat_id,
-                             tg.t(self._lang, "expired"))
+                             tg.t(self._lang, "expired"), reply_to=anchor)
             return
         all_cams = self._all_cams(folder)
         if not all_cams:
             api_send_message(self._token, self._chat_id,
-                             tg.t(self._lang, "no_clips"))
+                             tg.t(self._lang, "no_clips"), reply_to=anchor)
             return
 
         key = str(folder)
         sent = self._sent_cams.setdefault(key, set())
         if mode == "all":
-            # Every angle still owed - if nothing's gone out yet that's all four.
             to_send = [c for c in all_cams if c not in sent]
         elif not sent:
-            # First capture: the camera(s) that detected the event. Falls back to
-            # the entry's own camera (the trigger) when no list is recorded.
             detecting = [c for c in self._detecting_cams(folder, int(entry.get("c", 0)))
                          if c in all_cams]
             to_send = detecting or all_cams[:1]
@@ -885,30 +902,21 @@ class TelegramPoller(QThread):
 
         if not to_send:
             api_send_message(self._token, self._chat_id,
-                             tg.t(self._lang, "no_more"))
+                             tg.t(self._lang, "no_more"), reply_to=anchor)
             return
 
-        # On a Capture tap there may still be other angles to fetch, so each
-        # sent clip carries an "All cameras" button. On an All tap everything is
-        # already going out, so no button (a tap would just say "no more").
-        more = [c for c in all_cams if c not in sent and c not in to_send]
-        markup = alert_markup(self._lang, with_capture=False) if (
-            mode == "capture" and more) else None
-        queued = False
-        for n in to_send:
-            if self._stop:
-                break
-            status = self._send_clip(folder, n, markup=markup)
-            if status == "sent":
-                sent.add(n)
-            elif status == "retry":
-                # Segment not finalized yet - auto-retry when it closes; no
-                # manual re-tap, no "no video" error.
-                if self._queue_cut_retry(folder, n):
-                    queued = True
-        if queued:
+        # Ready every requested angle (cut on demand). If any aren't ready yet
+        # (segment still being written), queue the WHOLE request and wait so the
+        # album arrives as one message - the user already sees "preparing".
+        ready, missing = self._ready_angles(folder, to_send)
+        if missing:
+            self._queue_req(anchor, folder, to_send, requester)
             api_send_message(self._token, self._chat_id,
-                             tg.t(self._lang, "preparing"))
+                             tg.t(self._lang, "preparing"), reply_to=anchor)
+            return
+        if self._send_angles(folder, ready, anchor, requester):
+            for c, _ in ready:
+                sent.add(c)
 
     # A replied video is capped at this many seconds: the family gets the real
     # event clip if it's already short (dynamic length), or a tight 30s excerpt
@@ -941,39 +949,90 @@ class TelegramPoller(QThread):
             return short
         return path  # trim failed -> fall back to the full clip
 
-    def _send_clip(self, folder: Path, cam: int, markup: str | None = None) -> str:
-        """Send one camera's clip. Returns 'sent' (Telegram accepted it), 'retry'
-        (the angle's recording segment isn't finalized yet - the caller should
-        queue an auto-retry, NOT error at the user), or 'failed' (a real send
-        error, already reported to the user)."""
+    @staticmethod
+    def _who(frm) -> str:
+        """A short name/mention for the person who tapped/replied (for the
+        caption's 'for {who}'). @username if set (gives them a notification),
+        else first name."""
+        if not isinstance(frm, dict):
+            return ""
+        return ("@" + frm["username"]) if frm.get("username") else (
+            frm.get("first_name") or "")
+
+    def _event_when(self, folder: Path) -> str:
+        """The event's start time in DVR display time, for the album caption."""
+        try:
+            meta = json.loads((folder / "event.json").read_text(encoding="utf-8"))
+            return dvr_time.shift(datetime.fromisoformat(meta["start_at"])).strftime("%H:%M:%S")
+        except (OSError, ValueError, KeyError, TypeError):
+            return ""
+
+    def _ready_clip(self, folder: Path, cam: int) -> "Path | None":
+        """The send-ready clip path for `cam`: an existing folder clip, or one cut
+        on demand from the recordings. None if the covering segment isn't
+        finalized yet (still being written) - i.e. try again shortly."""
         path = folder / f"cam{cam}.mp4"
         if not path.is_file():
-            # Other angles exist in the recordings - cut them on demand for the
-            # SAME wall-clock window so a reply still delivers all four angles.
-            # A cut can fail because the covering segment is still being written
-            # (no moov yet); that's transient -> 'retry', not an error.
             if not self._cut_sibling_clip(folder, cam):
-                return "retry"
-        send_path = self._clip_for_send(folder, cam, path)
-        caption = tg.t(self._lang, "clip", where=self._label(cam))
+                return None
+        return self._clip_for_send(folder, cam, path)
+
+    def _ready_angles(self, folder: Path, cams: list):
+        """Split `cams` into (ready=[(cam, path)], missing=[cam]) by readiness."""
+        ready, missing = [], []
+        for c in cams:
+            p = self._ready_clip(folder, c)
+            if p is not None:
+                ready.append((c, p))
+            else:
+                missing.append(c)
+        return ready, missing
+
+    def _send_angles(self, folder: Path, items: list, anchor: int | None,
+                     requester: str) -> bool:
+        """Send the angle clips for one request as a reply to the alert. One clip
+        -> a single video; several -> ONE album (bulk gallery). Records each sent
+        message so further replies still resolve to the event. Returns True if
+        anything was accepted."""
+        if not items:
+            return False
+        who = tg.t(self._lang, "requested_by", who=requester) if requester else ""
+        if len(items) == 1:
+            cam, p = items[0]
+            cap = tg.t(self._lang, "clip", where=self._label(cam)) + who
+            try:
+                r = api_send_video(self._token, self._chat_id, cap, Path(p),
+                                   reply_to=anchor)
+            except Exception as e:
+                api_send_message(self._token, self._chat_id,
+                                 tg.t(self._lang, "send_failed",
+                                      where=self._label(cam), err=str(e)),
+                                 reply_to=anchor)
+                return False
+            if r.get("ok"):
+                self._map.record(_message_id(r), str(folder), cam, "video")
+                bus.info("TG", f"sent clip cam{cam} ({folder.name})")
+                return True
+            return False
+        cap = tg.t(self._lang, "angles_album", when=self._event_when(folder)) + who
+        paths = [str(p) for _, p in items]
         try:
-            result = api_send_video(self._token, self._chat_id, caption, send_path,
-                                    reply_markup=markup)
+            r = api_send_media_group(self._token, self._chat_id, cap, paths,
+                                     kind="video", reply_to=anchor)
         except Exception as e:
-            api_send_message(self._token, self._chat_id,
-                             tg.t(self._lang, "send_failed",
-                                  where=self._label(cam), err=str(e)))
-            return "failed"
-        if result.get("ok"):
-            self._map.record(_message_id(result), str(folder), cam, "video")
-            bus.info("TG", f"sent clip cam{cam} ({folder.name})")
-            return "sent"
-        api_send_message(
-            self._token, self._chat_id,
-            tg.t(self._lang, "send_failed", where=self._label(cam),
-                 err=result.get("description", "?")),
-        )
-        return "failed"
+            bus.warn("TG", f"angle album send failed: {e!s}")
+            return False
+        if r.get("ok"):
+            msgs = r.get("result")
+            if isinstance(msgs, list):
+                for (cam, _), m in zip(items, msgs):
+                    mid = _message_id({"result": m})
+                    if mid is not None:
+                        self._map.record(mid, str(folder), cam, "video")
+            bus.info("TG", f"sent {len(items)}-angle album ({folder.name})")
+            return True
+        bus.warn("TG", f"angle album rejected: {r.get('description', '?')}")
+        return False
 
     def _all_cams(self, folder: Path) -> list[int]:
         """Every camera angle available for this event. Includes clips already
@@ -1034,34 +1093,37 @@ class TelegramPoller(QThread):
 
     _LIVE_MATCH_WINDOW_S = 180.0  # a live alert and its event share a wall-clock
 
-    def _add_pending(self, cam: int, t: float, mode: str = "capture") -> None:
-        """Remember a request waiting for a not-yet-ready clip, so the poll loop
-        can auto-deliver it. De-duped per (cam, alert-time); a later 'all' tap
-        upgrades an existing 'capture' request so every angle still goes out."""
+    def _add_pending(self, cam: int, t: float, mode: str = "capture",
+                     anchor: int | None = None, requester: str = "") -> None:
+        """Remember a LIVE-alert request whose event clip doesn't exist yet, so
+        the poll loop can auto-deliver it (carrying the anchor + requester). A
+        later 'all' tap upgrades an existing 'capture' request."""
         for p in self._pending:
             if p["c"] == cam and abs(p["t"] - t) < 1.0:
                 if mode == "all":
                     p["m"] = "all"
                 return
-        self._pending.append({"c": cam, "t": t, "m": mode,
-                              "since": time.monotonic()})
+        self._pending.append({"c": cam, "t": t, "m": mode, "anchor": anchor,
+                              "requester": requester, "since": time.monotonic()})
         bus.info("TG", f"queued auto-send for cam{cam} clip when ready")
 
-    def _queue_cut_retry(self, folder: Path, cam: int) -> bool:
-        """Queue a sibling angle whose segment wasn't finalized yet for auto-retry.
-        Returns True if newly queued (so the caller can say 'preparing' once)."""
+    def _queue_req(self, anchor: int | None, folder: Path, cams: list,
+                   requester: str) -> None:
+        """Queue an angle request that must WAIT for not-yet-finalized segments,
+        so it can be delivered as ONE album the moment every angle is ready."""
         key = str(folder)
-        for p in self._pending_cuts:
-            if p["f"] == key and p["c"] == cam:
-                return False
-        self._pending_cuts.append({"f": key, "c": cam, "since": time.monotonic()})
-        bus.info("TG", f"queued angle retry cam{cam} ({folder.name}) until segment closes")
-        return True
+        for r in self._pending_reqs:
+            if r["anchor"] == anchor and r["f"] == key:
+                r["cams"] = sorted(set(r["cams"]) | set(cams))
+                return
+        self._pending_reqs.append({"anchor": anchor, "f": key, "cams": list(cams),
+                                   "requester": requester, "since": time.monotonic()})
+        bus.info("TG", f"queued angle request ({folder.name}) until segments close")
 
     def _check_pending(self) -> None:
-        """Each poll cycle: deliver any pending request whose clip now exists;
-        drop ones older than the TTL."""
-        if not self._pending and not self._pending_cuts:
+        """Each poll cycle: resolve live requests, and deliver queued angle
+        requests as one album once all their segments finalize (or at TTL)."""
+        if not self._pending and not self._pending_reqs:
             return
         still: list[dict] = []
         for p in self._pending:
@@ -1074,29 +1136,36 @@ class TelegramPoller(QThread):
                 continue
             bus.info("TG", f"pending cam{p['c']} clip ready; auto-sending")
             self._dispatch_reply({"f": str(folder), "c": p["c"], "k": "thumb"},
-                                 mode=p.get("m", "capture"))
+                                 mode=p.get("m", "capture"), anchor=p.get("anchor"),
+                                 requester=p.get("requester", ""))
         self._pending = still
 
-        # Retry sibling angles whose recording segment has since finalized.
-        still_cuts: list[dict] = []
-        for p in self._pending_cuts:
+        # Angle requests: send as ONE album when every angle is ready, or send
+        # whatever's available once the TTL is hit (a camera may be offline).
+        still_reqs: list[dict] = []
+        for r in self._pending_reqs:
             if self._stop:
-                still_cuts.append(p)
+                still_reqs.append(r)
                 continue
-            if time.monotonic() - p["since"] > self._PENDING_TTL_S:
+            folder = Path(r["f"])
+            sent = self._sent_cams.setdefault(r["f"], set())
+            remaining = [c for c in r["cams"] if c not in sent]
+            if not remaining:
+                continue
+            ready, missing = self._ready_angles(folder, remaining)
+            expired = time.monotonic() - r["since"] > self._PENDING_TTL_S
+            if missing and not expired:
+                still_reqs.append(r)
+                continue
+            if ready and self._send_angles(folder, ready, r["anchor"], r["requester"]):
+                for c, _ in ready:
+                    sent.add(c)
+            if expired and missing:
                 api_send_message(self._token, self._chat_id,
                                  tg.t(self._lang, "no_footage",
-                                      where=self._label(p["c"])))
-                continue
-            folder = Path(p["f"])
-            status = self._send_clip(folder, p["c"])
-            if status == "sent":
-                self._sent_cams.setdefault(str(folder), set()).add(p["c"])
-                bus.info("TG", f"pending angle cam{p['c']} ready; auto-sent")
-            elif status == "retry":
-                still_cuts.append(p)
-            # 'failed' -> drop (error already sent to the user)
-        self._pending_cuts = still_cuts
+                                      where=self._label(missing[0])),
+                                 reply_to=r["anchor"])
+        self._pending_reqs = still_reqs
 
     def _resolve_live_event(self, cam: int, t_epoch: float):
         """Find the clip folder for a live alert: a clip from `cam` whose
