@@ -28,6 +28,7 @@ import cv2
 from PySide6.QtCore import QThread, Signal
 
 from app.core import detect_regions as dr
+from app.core import detlog
 from app.core import events as evt
 from app.core.detect import Detector
 from app.core.event_stitcher import EventStitcher, SegmentScan
@@ -265,14 +266,29 @@ class SegmentAnalyzer(QThread):
         max_persons = max_vehicles = 0
 
         person_floor = self._person_floor_by_cam.get(cam_id, 0.0)
+        # Detection-history accumulators (written once per segment to detlog).
+        seen_kept: list[float] = []
+        seen_camfloor: list[float] = []
+        seen_global: list[float] = []
 
         def _consume(frame, offset_s: float) -> None:
             nonlocal pending, frames_sampled, person_frames, vehicle_frames
             nonlocal max_persons, max_vehicles
-            dets = self._detector.detect(frame)
+            dets, rejected = self._detector.detect(frame, with_rejected=True)
+            for d, _reason in rejected:
+                if d.is_person:
+                    seen_global.append(d.confidence)
             if person_floor:
-                dets = [d for d in dets
-                        if not (d.is_person and d.confidence < person_floor)]
+                survivors = []
+                for d in dets:
+                    if d.is_person and d.confidence < person_floor:
+                        seen_camfloor.append(d.confidence)
+                    else:
+                        survivors.append(d)
+                dets = survivors
+            for d in dets:
+                if d.is_person:
+                    seen_kept.append(d.confidence)
             n_person = sum(1 for d in dets if d.is_person)
             n_vehicle = sum(1 for d in dets if d.is_vehicle)
             frames_sampled += 1
@@ -343,6 +359,12 @@ class SegmentAnalyzer(QThread):
             with self._stitch_lock:
                 clips = self._stitcher.feed(scan)
             events_extracted = len(clips)
+
+        # Detection history: one line per analyzed segment, so "nothing detected"
+        # vs "nothing analyzing" (app down) vs "threshold too high" is visible.
+        seg_iso = seg_start.isoformat(timespec="seconds") if seg_start else path.stem
+        detlog.segment(seg_iso, cam_id, frames_sampled, seen_kept,
+                       seen_camfloor, seen_global, events_extracted, person_floor)
 
         result = SegmentResult(
             path=path,

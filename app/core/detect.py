@@ -91,15 +91,18 @@ class Detector:
         self._input_name: str | None = None
         self._imgsz = 640
 
-    def _passes_filters(self, d: "Detection", w: float, h: float) -> bool:
-        """False-positive guards applied after detection (see __init__)."""
+    def _verdict(self, d: "Detection", w: float, h: float) -> tuple[bool, str]:
+        """False-positive guards (see __init__). Returns (passed, reason)."""
         if d.is_person and d.confidence < self._min_person_conf:
-            return False
+            return False, f"person_conf<{self._min_person_conf:g}"
         if self._min_box_frac > 0.0 and w > 0 and h > 0:
             span = max((d.x2 - d.x1) / w, (d.y2 - d.y1) / h)
             if span < self._min_box_frac:
-                return False
-        return True
+                return False, f"box<{self._min_box_frac:g}"
+        return True, ""
+
+    def _passes_filters(self, d: "Detection", w: float, h: float) -> bool:
+        return self._verdict(d, w, h)[0]
 
     @property
     def available(self) -> bool:
@@ -123,8 +126,10 @@ class Detector:
         if len(inp.shape) == 4 and isinstance(inp.shape[2], int):
             self._imgsz = inp.shape[2]
 
-    def detect(self, frame_bgr: np.ndarray) -> list[Detection]:
-        """Run detection on one BGR frame (HxWx3 uint8)."""
+    def detect(self, frame_bgr: np.ndarray, with_rejected: bool = False):
+        """Run detection on one BGR frame (HxWx3 uint8). Returns the kept
+        detections; with_rejected=True returns (kept, [(Detection, reason)]) so
+        callers can LOG what the FP guards threw away (detection history)."""
         import cv2
 
         self._ensure_session()
@@ -148,7 +153,7 @@ class Detector:
         class_ids = class_ids[mask]
         confs = confs[mask]
         if boxes.shape[0] == 0:
-            return []
+            return ([], []) if with_rejected else []
 
         cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
         x1 = (cx - bw / 2 - dw) / r
@@ -164,6 +169,7 @@ class Detector:
         idxs = cv2.dnn.NMSBoxes(boxes_xywh, confs.tolist(), self._conf, self._iou)
 
         results: list[Detection] = []
+        rejected: list[tuple[Detection, str]] = []
         for i in np.array(idxs).flatten() if len(idxs) > 0 else []:
             cid = int(class_ids[i])
             d = Detection(
@@ -175,6 +181,9 @@ class Detector:
                 x2=float(x2[i]),
                 y2=float(y2[i]),
             )
-            if self._passes_filters(d, w0, h0):
+            ok, reason = self._verdict(d, w0, h0)
+            if ok:
                 results.append(d)
-        return results
+            elif with_rejected:
+                rejected.append((d, reason))
+        return (results, rejected) if with_rejected else results

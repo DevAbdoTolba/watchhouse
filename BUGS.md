@@ -11,6 +11,29 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 
 ## Open
 
+### BUG-009 — Detection silently stopped for ~16 h (app died, ffmpeg orphaned)
+- **Symptom (06/07):** "no detection history, nothing detected — threshold too
+  high." In fact ZERO events from 06/06 23:30 through 06/07 ~15:46.
+- **Status:** RESTORED + now VISIBLE (v0.4.66 adds a detection log); root cause of
+  the process death itself still unconfirmed → monitoring.
+- **What actually happened:** the Watchhouse app process was not running (no
+  Watchhouse/large-python process), yet recording segments kept appearing — the
+  recorder's **ffmpeg child processes had orphaned** and kept writing after the
+  app went down (~23:31, when v0.4.65 was rebuilt/relaunched). With the app dead,
+  the analyzer never ran → no events. The threshold was never the cause: the
+  v0.4.65 analyzer code runs clean (verified, no crash) and a real person was
+  caught at 0.83 the night before. cam2 (which has NO per-camera floor) also had
+  zero events — proof the analyzer, not the floor, was the issue.
+- **Fix shipped:** persistent **detection log** `recordings/detections.log`
+  (app/core/detlog.py) — one line per analyzed segment with the person
+  confidences KEPT, dropped by the per-camera floor, and dropped by the global
+  guards, plus events written. Now: no lines = app/analyzer down; `kept=[]` with
+  `drop_camfloor=[0.7,…]` = threshold too high; all-empty = model saw nothing.
+  Restarted the app; log confirmed filling (cam4 kept=[0.81], cam2 empty).
+- **Next step (recommended):** a watchdog / auto-restart + an "analyzer idle"
+  alert (e.g. Telegram "no segments analyzed in N min") so a dead app self-reports
+  instead of silently not detecting. Also kill orphaned ffmpeg on app exit.
+
 ### BUG-002 — "Other angles" never sent, no matter how long I wait
 - **Symptom:** reply to a clip to get the other camera angles → they never
   arrive, even after waiting well past the segment-close delay.

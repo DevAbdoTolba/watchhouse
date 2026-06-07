@@ -37,6 +37,7 @@ from app.core.live_detector import LiveDetector
 from app.core.recorder import RecorderSupervisor
 from app.core.pins import Pins
 from app.core import detect_regions as dr
+from app.core import detlog
 from app.core import dvr_time
 from app.core import camera_links
 from app.core.collision import CollisionMatcher
@@ -57,6 +58,9 @@ class MainWindow(QMainWindow):
         # Make every displayed time match the DVR's (non-DST) clock. Pure display
         # shift; recording filenames/lookups stay on PC time.
         dvr_time.set_offset_minutes(settings.dvr_time_offset_minutes)
+        # Detection history log: one line per analyzed segment (kept/dropped
+        # confidences) so "app down" vs "threshold too high" is always visible.
+        detlog.set_path(settings.recording_dir / "detections.log")
         # Permanent-keep ('● KEEPING') state lives here (the live view) and is
         # persisted via Pins; the pruner and the playback timeline read the file.
         self._pins = Pins.load(settings.env_path)
