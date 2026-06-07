@@ -34,28 +34,6 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
   alert (e.g. Telegram "no segments analyzed in N min") so a dead app self-reports
   instead of silently not detecting. Also kill orphaned ffmpeg on app exit.
 
-### BUG-002 — "Other angles" never sent, no matter how long I wait
-- **Symptom:** reply to a clip to get the other camera angles → they never
-  arrive, even after waiting well past the segment-close delay.
-- **Status:** OPEN — cause unconfirmed.
-- **Suspected causes (hypotheses):**
-  1. The sibling cut fails and the failure isn't retried/visible: `_send_clip` →
-     `_cut_sibling_clip` cuts the other angles on demand from `recordings/camN`
-     via `_segment_covering` + `_cut_clip`. If the covering segment can't be
-     found, or the computed `offset` is out of range (the `> 17*60` guard), it
-     returns False and the angle is never marked sent — but the user may not see
-     a clear "couldn't cut" message.
-  2. Timestamp mismatch for LIVE events: a live quick-clip event's `event.json`
-     `start_at` (wall clock at detection) vs the recording segment boundaries —
-     if the window_start lands just outside a segment, `_segment_covering`
-     returns the wrong/no segment.
-  3. Progressive-delivery state (`_sent_cams`) marking an angle as sent even
-     though the cut failed → it's skipped on later replies ("no more angles").
-     (Need to confirm: `_send_clip` returns False on failure and the caller only
-     marks on True — but double-check the live-resolve path.)
-- **Next step:** log each `_cut_sibling_clip` attempt (cam, window_start,
-  segment found?, offset, ffmpeg rc) so we can see exactly where it bails.
-
 ### BUG-003 — Live alert photo delayed ~30 s (should be instant)
 - **Symptom (06/06):** the live-tier image arrives ~30 s after the movement.
 - **Status:** ADDRESSED v0.4.64 — confirm on the real system.
@@ -98,6 +76,31 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 ---
 
 ## Fixed
+
+### BUG-002 — "Other angles" need a manual re-tap + arrive time-shifted
+- **Symptom (06/07):** tapped "all cameras" → "لا يوجد فيديو لـ … في ذلك الوقت"
+  (no video at that time) for all 3 siblings. Tapped again manually a bit later →
+  they arrived, but shifted ~2 s AFTER the detection moment.
+- **Status:** FIXED v0.4.67. Two bugs, both confirmed:
+  1. **Manual re-tap:** the sibling angle is cut on demand from `recordings/camN`
+     over the event window. If that camera's covering segment isn't FINALIZED yet
+     (still being written, no moov), `_cut_clip` fails → it errored "no video"
+     and gave up. The user had to tap again after the segment closed.
+  2. **+2 s shift:** the cut started at only `start_at − pre_roll` (pre_roll = the
+     2 s live value). Cross-camera segment-start skew (~1 s) + stream-copy keyframe
+     snapping pushed the angle PAST the detection moment.
+- **Fix:**
+  1. A sibling cut that fails now returns 'retry' (not an error): the request is
+     queued (`_pending_cuts`) and auto-retried every poll cycle until the segment
+     finalizes, then auto-delivered — one "preparing…" message, no re-tap.
+     `_send_clip` returns sent/retry/failed; `_check_pending` drains the queue;
+     TTL 20 min then a single "no video" if it truly never appears.
+  2. Sibling cuts now start `pre_roll + 3 s` (`_SIBLING_LEAD_S`) BEFORE the
+     detection and extend the duration by the same, so the moment is always
+     inside the clip with margin — never shifted past it.
+- **Verified:** offscreen — detecting cam sent immediately, 3 siblings queued +
+  one "preparing", all four auto-delivered after segments finalize, queue
+  drained; cut offset/duration use the extra lead.
 
 ### BUG-007 — DVR ignores DST → all times 1 h off the DVR overlay
 - **Symptom (06/06):** message says 16:00 but the DVR shows 15:00; the DVR clock

@@ -723,8 +723,17 @@ class TelegramPoller(QThread):
         # clip wasn't encoded yet. We hold (cam, alert-time) and auto-deliver the
         # moment the clip exists - no second reply needed, no wasted data.
         self._pending: list[dict] = []
+        # Pending sibling-angle cuts: an "all cameras" request asked for an angle
+        # whose recording segment wasn't finalized yet (still being written). We
+        # queue {folder, cam} and retry each poll cycle, so the user never has to
+        # tap again - the angle auto-arrives once the segment closes.
+        self._pending_cuts: list[dict] = []
 
     _PENDING_TTL_S = 1200.0  # stop waiting on a pending request after 20 min
+    # Extra lead added to sibling cuts beyond the live pre-roll, to absorb the
+    # ~1s cross-camera segment-start skew + keyframe snapping so the angle always
+    # STARTS before the detection moment (never shifted past it).
+    _SIBLING_LEAD_S = 3.0
 
     def set_labels(self, labels: dict) -> None:
         self._labels = dict(labels)
@@ -885,11 +894,21 @@ class TelegramPoller(QThread):
         more = [c for c in all_cams if c not in sent and c not in to_send]
         markup = alert_markup(self._lang, with_capture=False) if (
             mode == "capture" and more) else None
+        queued = False
         for n in to_send:
             if self._stop:
                 break
-            if self._send_clip(folder, n, markup=markup):
+            status = self._send_clip(folder, n, markup=markup)
+            if status == "sent":
                 sent.add(n)
+            elif status == "retry":
+                # Segment not finalized yet - auto-retry when it closes; no
+                # manual re-tap, no "no video" error.
+                if self._queue_cut_retry(folder, n):
+                    queued = True
+        if queued:
+            api_send_message(self._token, self._chat_id,
+                             tg.t(self._lang, "preparing"))
 
     # A replied video is capped at this many seconds: the family gets the real
     # event clip if it's already short (dynamic length), or a tight 30s excerpt
@@ -922,17 +941,19 @@ class TelegramPoller(QThread):
             return short
         return path  # trim failed -> fall back to the full clip
 
-    def _send_clip(self, folder: Path, cam: int, markup: str | None = None) -> bool:
-        """Send one camera's clip. Returns True only when Telegram accepted it,
-        so the caller marks exactly the angles that actually went out."""
+    def _send_clip(self, folder: Path, cam: int, markup: str | None = None) -> str:
+        """Send one camera's clip. Returns 'sent' (Telegram accepted it), 'retry'
+        (the angle's recording segment isn't finalized yet - the caller should
+        queue an auto-retry, NOT error at the user), or 'failed' (a real send
+        error, already reported to the user)."""
         path = folder / f"cam{cam}.mp4"
         if not path.is_file():
             # Other angles exist in the recordings - cut them on demand for the
             # SAME wall-clock window so a reply still delivers all four angles.
+            # A cut can fail because the covering segment is still being written
+            # (no moov yet); that's transient -> 'retry', not an error.
             if not self._cut_sibling_clip(folder, cam):
-                api_send_message(self._token, self._chat_id,
-                                 tg.t(self._lang, "no_footage", where=self._label(cam)))
-                return False
+                return "retry"
         send_path = self._clip_for_send(folder, cam, path)
         caption = tg.t(self._lang, "clip", where=self._label(cam))
         try:
@@ -942,17 +963,17 @@ class TelegramPoller(QThread):
             api_send_message(self._token, self._chat_id,
                              tg.t(self._lang, "send_failed",
                                   where=self._label(cam), err=str(e)))
-            return False
+            return "failed"
         if result.get("ok"):
             self._map.record(_message_id(result), str(folder), cam, "video")
             bus.info("TG", f"sent clip cam{cam} ({folder.name})")
-            return True
+            return "sent"
         api_send_message(
             self._token, self._chat_id,
             tg.t(self._lang, "send_failed", where=self._label(cam),
                  err=result.get("description", "?")),
         )
-        return False
+        return "failed"
 
     def _all_cams(self, folder: Path) -> list[int]:
         """Every camera angle available for this event. Includes clips already
@@ -988,9 +1009,13 @@ class TelegramPoller(QThread):
 
         from app.core.events import _cut_clip, _segment_covering
 
-        # The live clip's footage starts ~pre_roll before the detection moment;
-        # mirror that window on the sibling so the angles line up.
-        window_start = start_at - timedelta(seconds=self._pre_roll_s)
+        # Start the sibling EARLIER than the detection by pre_roll + a safety lead,
+        # so cross-camera segment-start skew (~1s) and keyframe snapping can't push
+        # the angle past the moment. Extend the duration by the same lead so the
+        # tail still reaches the end of the event.
+        lead = self._pre_roll_s + self._SIBLING_LEAD_S
+        window_start = start_at - timedelta(seconds=lead)
+        dur = dur + self._SIBLING_LEAD_S
         cam_dir = Path(self._recording_dir) / f"cam{cam}"
         found = _segment_covering(cam_dir, window_start)
         if found is None:
@@ -1022,10 +1047,21 @@ class TelegramPoller(QThread):
                               "since": time.monotonic()})
         bus.info("TG", f"queued auto-send for cam{cam} clip when ready")
 
+    def _queue_cut_retry(self, folder: Path, cam: int) -> bool:
+        """Queue a sibling angle whose segment wasn't finalized yet for auto-retry.
+        Returns True if newly queued (so the caller can say 'preparing' once)."""
+        key = str(folder)
+        for p in self._pending_cuts:
+            if p["f"] == key and p["c"] == cam:
+                return False
+        self._pending_cuts.append({"f": key, "c": cam, "since": time.monotonic()})
+        bus.info("TG", f"queued angle retry cam{cam} ({folder.name}) until segment closes")
+        return True
+
     def _check_pending(self) -> None:
         """Each poll cycle: deliver any pending request whose clip now exists;
         drop ones older than the TTL."""
-        if not self._pending:
+        if not self._pending and not self._pending_cuts:
             return
         still: list[dict] = []
         for p in self._pending:
@@ -1040,6 +1076,27 @@ class TelegramPoller(QThread):
             self._dispatch_reply({"f": str(folder), "c": p["c"], "k": "thumb"},
                                  mode=p.get("m", "capture"))
         self._pending = still
+
+        # Retry sibling angles whose recording segment has since finalized.
+        still_cuts: list[dict] = []
+        for p in self._pending_cuts:
+            if self._stop:
+                still_cuts.append(p)
+                continue
+            if time.monotonic() - p["since"] > self._PENDING_TTL_S:
+                api_send_message(self._token, self._chat_id,
+                                 tg.t(self._lang, "no_footage",
+                                      where=self._label(p["c"])))
+                continue
+            folder = Path(p["f"])
+            status = self._send_clip(folder, p["c"])
+            if status == "sent":
+                self._sent_cams.setdefault(str(folder), set()).add(p["c"])
+                bus.info("TG", f"pending angle cam{p['c']} ready; auto-sent")
+            elif status == "retry":
+                still_cuts.append(p)
+            # 'failed' -> drop (error already sent to the user)
+        self._pending_cuts = still_cuts
 
     def _resolve_live_event(self, cam: int, t_epoch: float):
         """Find the clip folder for a live alert: a clip from `cam` whose
