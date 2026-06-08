@@ -33,6 +33,8 @@ env/
 # Build artifacts
 build/
 dist/
+build_stage/
+dist_stage/
 *.spec
 *.exe.manifest
 

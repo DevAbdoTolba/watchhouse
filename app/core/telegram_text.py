@@ -51,6 +51,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "help":       "Tap the buttons under an alert: 🎥 Capture for the video, "
                       "🎬 All cameras for every angle. (Replying to a photo still "
                       "works too.)\n/last — the most recent event.",
+        "wd_restarted":"⚠️ Watchhouse had stopped — restarted automatically  {when}",
+        "wd_looping":  "⛔ Watchhouse keeps crashing ({n}× in {mins} min). Auto-"
+                       "restart is paused for a few minutes — please check the PC.",
     },
     "ar": {
         "alert_live": "🚨 {where}: حركة الآن  {when}",
@@ -87,6 +90,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "help":       "اضغط الأزرار أسفل التنبيه: 🎥 الفيديو للمقطع، "
                       "🎬 كل الكاميرات لكل الزوايا. (الردّ على الصورة ما زال يعمل "
                       "أيضًا.)\n/last — أحدث حدث.",
+        "wd_restarted":"⚠️ توقف Watchhouse — تمت إعادة تشغيله تلقائيًا  {when}",
+        "wd_looping":  "⛔ Watchhouse يتعطل باستمرار ({n}× خلال {mins} دقيقة). تم "
+                       "إيقاف إعادة التشغيل التلقائي لبضع دقائق — يرجى فحص الجهاز.",
     },
 }
 

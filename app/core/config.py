@@ -113,6 +113,11 @@ class Settings:
     # Presence-aware notifications (v0.4.20): send the recurring "still present"
     # pings. Off keeps only arrival + cleared. On by default (user wants pings).
     event_notify_ongoing: bool
+    # Watchdog (v0.4.69): a detached sibling process that relaunches the app
+    # when it dies/hangs and pings Telegram. The initial on/off default; the
+    # live toggle persists to .watchhouse-watchdog.json (see core.watchdog).
+    watchdog_enabled: bool
+    watchdog_idle_minutes: float   # heartbeat older than this => app down/hung
 
     @classmethod
     def load(cls) -> "Settings":
@@ -180,6 +185,8 @@ class Settings:
             live_max_clip_s=float(os.environ.get("LIVE_MAX_CLIP_SECONDS", "30")),
             live_autosend_clip=_truthy(os.environ.get("LIVE_AUTOSEND_CLIP", "0")),
             event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
+            watchdog_enabled=_truthy(os.environ.get("WATCHDOG_ENABLED", "1")),
+            watchdog_idle_minutes=float(os.environ.get("WATCHDOG_IDLE_MINUTES", "2")),
         )
         bus.info(
             "CFG",

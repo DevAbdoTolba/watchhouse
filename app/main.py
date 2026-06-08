@@ -45,6 +45,13 @@ def _acquire_single_instance() -> QLockFile | None:
 
 
 def main() -> int:
+    # Headless mode: keep the GUI app alive across silent deaths (BUG-009).
+    # Branches before the QApplication / single-instance lock so it never
+    # counts as a second app instance.
+    if "--watchdog" in sys.argv[1:]:
+        from app.core.watchdog import run_watchdog
+        return run_watchdog()
+
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
     app = QApplication(sys.argv)

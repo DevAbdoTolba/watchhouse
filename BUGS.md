@@ -14,8 +14,10 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 ### BUG-009 — Detection silently stopped for ~16 h (app died, ffmpeg orphaned)
 - **Symptom (06/07):** "no detection history, nothing detected — threshold too
   high." In fact ZERO events from 06/06 23:30 through 06/07 ~15:46.
-- **Status:** RESTORED + now VISIBLE (v0.4.66 adds a detection log); root cause of
-  the process death itself still unconfirmed → monitoring.
+- **Status:** GUARDED (v0.4.70 adds an auto-restart watchdog) + VISIBLE (v0.4.66
+  detection log). Root cause of the death itself still unconfirmed, but it now
+  self-heals + self-reports instead of staying silently dead. Re-confirmed on
+  06/08: a 46-min dead window 01:21–02:07 AM (heartbeat would have caught it).
 - **What actually happened:** the Watchhouse app process was not running (no
   Watchhouse/large-python process), yet recording segments kept appearing — the
   recorder's **ffmpeg child processes had orphaned** and kept writing after the
@@ -30,9 +32,17 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
   guards, plus events written. Now: no lines = app/analyzer down; `kept=[]` with
   `drop_camfloor=[0.7,…]` = threshold too high; all-empty = model saw nothing.
   Restarted the app; log confirmed filling (cam4 kept=[0.81], cam2 empty).
-- **Next step (recommended):** a watchdog / auto-restart + an "analyzer idle"
-  alert (e.g. Telegram "no segments analyzed in N min") so a dead app self-reports
-  instead of silently not detecting. Also kill orphaned ffmpeg on app exit.
+- **Fix shipped (v0.4.70):** an external **watchdog** (`app/core/watchdog.py`),
+  the SAME exe run detached as `Watchhouse.exe --watchdog`, spawned by the app at
+  startup. The app touches a heartbeat file every 15 s; the watchdog relaunches
+  it (from the .env folder, so the right config/language reloads) + pings Telegram
+  when the heartbeat goes stale > `WATCHDOG_IDLE_MINUTES` (default 2). It kills
+  orphaned ffmpeg before relaunch, has a crash-loop back-off (5×/30 min → pause +
+  alert), steps aside on a clean quit (shutdown marker), and is toggleable live
+  from System menu → "Auto-restart watchdog" (persisted).
+- **Next step:** observe the watchdog.log over a few days to finally catch the
+  underlying death cause; consider an "analyzer idle" signal (heartbeat tied to
+  segment progress, not just the UI thread) for the hang-but-process-alive case.
 
 ### BUG-003 — Live alert photo delayed ~30 s (should be instant)
 - **Symptom (06/06):** the live-tier image arrives ~30 s after the movement.

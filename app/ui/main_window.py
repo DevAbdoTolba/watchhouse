@@ -41,6 +41,7 @@ from app.core import detlog
 from app.core import dvr_time
 from app.core import camera_links
 from app.core import detection_prefs
+from app.core import watchdog
 from app.core.collision import CollisionMatcher
 from app.ui.camera_names_dialog import CameraNamesDialog
 from app.ui.camera_links_dialog import CameraLinksDialog
@@ -283,6 +284,17 @@ class MainWindow(QMainWindow):
         self._act_links.setToolTip(
             "Tie two cameras at a crossing so one movement = one event")
         self._act_detconf = system_menu.addAction("Detection Confidence…")
+
+        system_menu.addSeparator()
+        self._act_watchdog = system_menu.addAction("Auto-restart watchdog")
+        self._act_watchdog.setCheckable(True)
+        self._act_watchdog.setChecked(
+            watchdog.enabled(self._settings.recording_dir,
+                             default=self._settings.watchdog_enabled))
+        self._act_watchdog.setToolTip(
+            "Relaunch Watchhouse automatically if it dies or hangs, and ping "
+            "Telegram. Turn off to manage it yourself.")
+        self._act_watchdog.toggled.connect(self._toggle_watchdog)
         self._act_detconf.setToolTip(
             "Per-camera person-confidence floor (0 = uncapped)")
         system_menu.addSeparator()
@@ -589,7 +601,38 @@ class MainWindow(QMainWindow):
         if self._settings.recording_enabled:
             QTimer.singleShot(1500, self._start_recorder)
 
+        # Watchdog (v0.4.69): prove we're alive via a heartbeat the sibling
+        # process watches, and keep that sibling running while enabled.
+        rec_dir = self._settings.recording_dir
+        watchdog.seed_default(rec_dir, self._settings.watchdog_enabled)
+        watchdog.touch_heartbeat(rec_dir)
+        self._hb_timer = QTimer(self)
+        self._hb_timer.timeout.connect(self._heartbeat_tick)
+        self._hb_timer.start(15_000)
+        watchdog.spawn_if_enabled(self._settings)
+
+    @Slot()
+    def _heartbeat_tick(self) -> None:
+        watchdog.touch_heartbeat(self._settings.recording_dir)
+        # Keep the sibling alive: re-spawn if it crashed while we're enabled.
+        watchdog.spawn_if_enabled(self._settings)
+
+    @Slot(bool)
+    def _toggle_watchdog(self, on: bool) -> None:
+        rec_dir = self._settings.recording_dir
+        watchdog.set_enabled(rec_dir, on)
+        if on:
+            watchdog.touch_heartbeat(rec_dir)
+            watchdog.spawn_if_enabled(self._settings)
+            bus.info("WD", "auto-restart watchdog ON")
+        else:
+            # The running watchdog notices the toggle next loop and exits.
+            bus.info("WD", "auto-restart watchdog OFF")
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        # Tell the watchdog this is a deliberate quit so it doesn't relaunch us.
+        watchdog.mark_shutdown(self._settings.recording_dir)
+        self._hb_timer.stop()
         self._refresh_clock.stop()
         self._keep_timer.stop()
         self._collision_timer.stop()
