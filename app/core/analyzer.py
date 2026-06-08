@@ -135,6 +135,11 @@ class SegmentAnalyzer(QThread):
         """Update which cameras trigger event extraction (live, thread-safe)."""
         self._armed = set(armed)
 
+    def set_person_floor_by_cam(self, floors: dict) -> None:
+        """Update per-camera person-confidence floors (live, thread-safe). A cam
+        absent from the dict is uncapped (keeps every person the model reports)."""
+        self._person_floor_by_cam = {int(c): float(f) for c, f in (floors or {}).items()}
+
     def set_regions(self, regions: dict) -> None:
         """Update per-camera detect boxes (live, thread-safe). Same boxes the
         live tier uses; here they only flag whether an event touched the box."""

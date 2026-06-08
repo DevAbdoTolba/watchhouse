@@ -377,36 +377,77 @@ class _QuickClipTask(QRunnable):
             bus.warn("TG", f"quick clip send failed: {e!s}")
 
 
+def _composite_thumbs(paths: list, out_path: Path) -> "Path | None":
+    """Stitch up to two camera thumbs side-by-side into one image, so a collision
+    can be sent as a SINGLE photo (which CAN carry inline buttons, unlike an
+    album). Returns the written combined path, a lone existing thumb, or None."""
+    existing = [Path(p) for p in paths if p and Path(p).is_file()]
+    if not existing:
+        return None
+    if len(existing) == 1:
+        return existing[0]
+    try:
+        import cv2
+        import numpy as np
+
+        imgs = [im for im in (cv2.imread(str(p)) for p in existing[:2]) if im is not None]
+        if len(imgs) < 2:
+            return existing[0]
+        h = min(im.shape[0] for im in imgs)
+        resized = [cv2.resize(im, (max(1, int(im.shape[1] * (h / im.shape[0]))), h))
+                   for im in imgs]
+        gap = np.full((h, 6, 3), 20, dtype=np.uint8)  # thin dark separator
+        combined = resized[0]
+        for im in resized[1:]:
+            combined = np.hstack([combined, gap, im])
+        cv2.imwrite(str(out_path), combined)
+        return out_path
+    except Exception as e:
+        bus.warn("TG", f"thumb composite failed: {e!s}")
+        return existing[0]
+
+
 class _CollisionTask(QRunnable):
-    """Send a fused same-movement event: one album of both camera thumbs, named
-    by the link + direction. Records each sent message so a reply can pull the
-    clips of the event folder. Off the UI thread."""
+    """Send a fused same-movement event as ONE photo (both camera thumbs stitched
+    side-by-side, so it CAN carry inline buttons), named by the link + direction.
+    Records it as a 'collision' entry carrying BOTH event folders so its buttons
+    serve both clips (Capture) or every union angle (All cameras). Off the UI
+    thread."""
 
     def __init__(self, token: str, chat_id: str, caption: str, thumbs: list,
-                 tmap, folder: str, cam: int) -> None:
+                 markup: str | None, tmap, from_folder: str, to_folder: str,
+                 cam_from: int, cam_to: int) -> None:
         super().__init__()
         self._token = token
         self._chat_id = chat_id
         self._caption = caption
         self._thumbs = thumbs
+        self._markup = markup
         self._map = tmap
-        self._folder = folder
-        self._cam = cam
+        self._from_folder = from_folder
+        self._to_folder = to_folder
+        self._cam_from = cam_from
+        self._cam_to = cam_to
 
     def run(self) -> None:
         try:
-            result = api_send_media_group(self._token, self._chat_id,
-                                          self._caption, self._thumbs)
-            if not result.get("ok"):
-                bus.warn("TG", f"collision album rejected: {result.get('description', '?')}")
+            out = (Path(self._from_folder) / "collision_thumb.jpg"
+                   if self._from_folder else None)
+            photo = _composite_thumbs(self._thumbs, out) if out else None
+            if photo is None:
+                api_send_message(self._token, self._chat_id, self._caption)
+                bus.info("TG", "collision alert sent (text; no thumbs)")
                 return
-            bus.info("TG", "collision alert sent (album)")
-            sent = result.get("result")
-            if self._map is not None and self._folder and isinstance(sent, list):
-                for msg in sent:
-                    mid = _message_id({"result": msg})
-                    if mid is not None:
-                        self._map.record(mid, self._folder, self._cam, "thumb")
+            result = api_send_photo(self._token, self._chat_id, self._caption,
+                                    photo, reply_markup=self._markup)
+            if not result.get("ok"):
+                bus.warn("TG", f"collision photo rejected: {result.get('description', '?')}")
+                return
+            bus.info("TG", "collision alert sent (photo)")
+            if self._map is not None and self._from_folder:
+                self._map.record(_message_id(result), self._from_folder,
+                                 self._cam_from, "collision",
+                                 extra={"f2": self._to_folder, "c2": self._cam_to})
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")[:200] if e.fp else ""
             bus.warn("TG", f"collision send failed: HTTP {e.code} {body}")
@@ -646,9 +687,11 @@ class TelegramNotifier(QObject):
 
     def notify_collision(self, name: str, direction: str, from_clip,
                          to_clip) -> None:
-        """Fused same-movement event: one album of both angles, named by the
-        link + direction (e.g. 'Front door — went out') instead of a camera.
-        Replaces the two separate per-camera segment pushes."""
+        """Fused same-movement event: ONE photo (both angles side-by-side) named
+        by the link + direction (e.g. 'Front door — went out') instead of a
+        camera. Its buttons serve BOTH detecting clips (Capture) or every angle
+        over the union of both events (All cameras). Replaces the two separate
+        per-camera segment pushes."""
         if not self.enabled:
             return
         when = dvr_time.shift(getattr(from_clip, "start_at", None))
@@ -657,12 +700,15 @@ class TelegramNotifier(QObject):
                        when=when_s)
         thumbs = [getattr(from_clip, "thumb_path", None),
                   getattr(to_clip, "thumb_path", None)]
-        folder = getattr(from_clip, "folder", None)
-        folder_s = str(folder) if folder is not None else ""
-        cam = getattr(from_clip, "cam_id", 0)
+        from_folder = str(getattr(from_clip, "folder", "") or "")
+        to_folder = str(getattr(to_clip, "folder", "") or "")
+        cam_from = getattr(from_clip, "cam_id", 0)
+        cam_to = getattr(to_clip, "cam_id", 0)
         tmap = self._map if self._commands else None
-        self._enqueue(_CollisionTask(self._token, self._chat_id, caption,
-                                     thumbs, tmap, folder_s, cam))
+        markup = alert_markup(self._lang) if tmap is not None else None
+        self._enqueue(_CollisionTask(self._token, self._chat_id, caption, thumbs,
+                                     markup, tmap, from_folder, to_folder,
+                                     cam_from, cam_to))
 
     @staticmethod
     def _what(clip) -> str:
@@ -867,6 +913,9 @@ class TelegramPoller(QThread):
 
         A LIVE alert (kind 'live') has no folder yet: resolve it, or queue + retry
         (carrying the anchor + requester) the moment the clip exists."""
+        if entry.get("k") == "collision":
+            self._dispatch_collision(entry, mode, anchor, requester)
+            return
         if entry.get("k") == "live" and not entry.get("f"):
             cam = int(entry.get("c", 0))
             t = float(entry.get("t", 0.0))
@@ -917,6 +966,153 @@ class TelegramPoller(QThread):
         if self._send_angles(folder, ready, anchor, requester):
             for c, _ in ready:
                 sent.add(c)
+
+    def _dispatch_collision(self, entry: dict, mode: str, anchor: int | None,
+                            requester: str) -> None:
+        """A fused-crossing alert's button. Capture = both detecting clips (one
+        per event); All cameras = every angle over the UNION window of both events
+        (longest clip). The source segments are already finalized (events are in
+        the past), so we cut on demand and send ONE album reply to the alert."""
+        f = Path(entry.get("f", ""))
+        f2 = Path(entry.get("f2", ""))
+        cam_from = int(entry.get("c", 0))
+        cam_to = int(entry.get("c2", 0))
+        if not f.is_dir():
+            api_send_message(self._token, self._chat_id,
+                             tg.t(self._lang, "expired"), reply_to=anchor)
+            return
+        if mode == "all":
+            items = self._ready_union(f, f2)
+            caption = tg.t(self._lang, "angles_album", when=self._union_when(f, f2))
+        else:
+            items = []
+            for fld, cam in ((f, cam_from), (f2, cam_to)):
+                if not fld.is_dir():
+                    continue
+                p = self._ready_clip(fld, cam)
+                if p is not None:
+                    items.append((cam, p, str(fld)))
+            caption = tg.t(self._lang, "pair_clips", when=self._union_when(f, f2))
+        if not items:
+            api_send_message(self._token, self._chat_id,
+                             tg.t(self._lang, "no_clips"), reply_to=anchor)
+            return
+        self._send_video_album(items, anchor, requester, caption)
+
+    def _send_video_album(self, items: list, anchor: int | None,
+                          requester: str, caption: str) -> bool:
+        """Send [(cam, path, folder)] as one reply: a single video for one item,
+        else ONE album. Records each sent message against ITS OWN folder so
+        further replies still resolve. Returns True if anything was accepted."""
+        if not items:
+            return False
+        who = tg.t(self._lang, "requested_by", who=requester) if requester else ""
+        full = caption + who
+        if len(items) == 1:
+            cam, p, fld = items[0]
+            try:
+                r = api_send_video(self._token, self._chat_id, full, Path(p),
+                                   reply_to=anchor)
+            except Exception as e:
+                bus.warn("TG", f"collision clip send failed: {e!s}")
+                return False
+            if r.get("ok"):
+                self._map.record(_message_id(r), fld, cam, "video")
+                bus.info("TG", f"sent collision clip cam{cam}")
+                return True
+            return False
+        paths = [str(p) for _, p, _ in items]
+        try:
+            r = api_send_media_group(self._token, self._chat_id, full, paths,
+                                     kind="video", reply_to=anchor)
+        except Exception as e:
+            bus.warn("TG", f"collision album send failed: {e!s}")
+            return False
+        if r.get("ok"):
+            msgs = r.get("result")
+            if isinstance(msgs, list):
+                for (cam, _p, fld), m in zip(items, msgs):
+                    mid = _message_id({"result": m})
+                    if mid is not None:
+                        self._map.record(mid, fld, cam, "video")
+            bus.info("TG", f"sent {len(items)}-clip collision album")
+            return True
+        bus.warn("TG", f"collision album rejected: {r.get('description', '?')}")
+        return False
+
+    def _event_start(self, folder: Path):
+        """The event's start datetime (raw PC time) from its sidecar, or None."""
+        try:
+            meta = json.loads((folder / "event.json").read_text(encoding="utf-8"))
+            return datetime.fromisoformat(meta["start_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _union_window(self, f: Path, f2: Path):
+        """[(earliest start - lead) .. (latest end + post)] spanning BOTH events,
+        so 'all angles' clips cover the whole crossing + margins. Returns
+        (window_start, dur_seconds) or None if neither event time is readable."""
+        s1, s2 = self._event_start(f), self._event_start(f2)
+        starts = [s for s in (s1, s2) if s is not None]
+        if not starts:
+            return None
+        ends = []
+        if s1 is not None:
+            ends.append(s1 + timedelta(seconds=max(0.0, self._clip_duration_s(f))))
+        if s2 is not None:
+            ends.append(s2 + timedelta(seconds=max(0.0, self._clip_duration_s(f2))))
+        start_min = min(starts)
+        end_max = max(ends) if ends else start_min
+        lead = self._pre_roll_s + self._SIBLING_LEAD_S
+        window_start = start_min - timedelta(seconds=lead)
+        dur = (end_max - start_min).total_seconds() + lead + self._post_roll_s
+        return window_start, max(1.0, dur)
+
+    def _union_when(self, f: Path, f2: Path) -> str:
+        """The earliest of the two event starts, in DVR display time."""
+        starts = [s for s in (self._event_start(f), self._event_start(f2))
+                  if s is not None]
+        if not starts:
+            return ""
+        return dvr_time.shift(min(starts)).strftime("%H:%M:%S")
+
+    def _ready_union(self, f: Path, f2: Path) -> list:
+        """Cut every configured camera over the union window into folder f
+        (cached as cam{c}_all.mp4). Returns [(cam, path, folder)] produced."""
+        win = self._union_window(f, f2)
+        if win is None:
+            return []
+        window_start, dur = win
+        cams = self._cam_ids or self._all_cams(f)
+        items = []
+        for cam in cams:
+            out = f / f"cam{cam}_all.mp4"
+            if out.is_file() and out.stat().st_size > 0:
+                items.append((cam, out, str(f)))
+                continue
+            if self._cut_at(out, cam, window_start, dur):
+                bus.info("TG", f"union cut cam{cam} {dur:.1f}s @ {window_start:%H:%M:%S}")
+                items.append((cam, out, str(f)))
+        return items
+
+    def _cut_at(self, out: Path, cam: int, window_start, dur: float) -> bool:
+        """Cut cam's clip from the recordings over [window_start, +dur]. False if
+        the covering segment isn't on disk / not finalized yet."""
+        if not self._recording_dir:
+            return False
+        from app.core.events import _cut_clip, _segment_covering
+
+        cam_dir = Path(self._recording_dir) / f"cam{cam}"
+        found = _segment_covering(cam_dir, window_start)
+        if found is None:
+            bus.warn("TG", f"cut: no segment covering {window_start:%H:%M:%S} for cam{cam}")
+            return False
+        seg_start, src = found
+        offset = (window_start - seg_start).total_seconds()
+        if offset < 0 or offset > 17 * 60:
+            bus.warn("TG", f"cut: offset {offset:.0f}s out of range for cam{cam}")
+            return False
+        return _cut_clip(src, out, offset, dur)
 
     # A replied video is capped at this many seconds: the family gets the real
     # event clip if it's already short (dynamic length), or a tight 30s excerpt
@@ -1066,29 +1262,16 @@ class TelegramPoller(QThread):
             bus.warn("TG", f"sibling cut: bad event.json ({e!s})")
             return False
 
-        from app.core.events import _cut_clip, _segment_covering
-
         # Start the sibling EARLIER than the detection by pre_roll + a safety lead,
         # so cross-camera segment-start skew (~1s) and keyframe snapping can't push
         # the angle past the moment. Extend the duration by the same lead so the
         # tail still reaches the end of the event.
         lead = self._pre_roll_s + self._SIBLING_LEAD_S
         window_start = start_at - timedelta(seconds=lead)
-        dur = dur + self._SIBLING_LEAD_S
-        cam_dir = Path(self._recording_dir) / f"cam{cam}"
-        found = _segment_covering(cam_dir, window_start)
-        if found is None:
-            bus.warn("TG", f"sibling cut: no segment covering {window_start:%H:%M:%S} for cam{cam}")
-            return False
-        seg_start, src = found
-        offset = (window_start - seg_start).total_seconds()
-        if offset < 0 or offset > 17 * 60:
-            bus.warn("TG", f"sibling cut: offset {offset:.0f}s out of range for cam{cam}")
-            return False
-        out = folder / f"cam{cam}.mp4"
-        ok = _cut_clip(src, out, offset, dur)
+        ok = self._cut_at(folder / f"cam{cam}.mp4", cam, window_start,
+                          dur + self._SIBLING_LEAD_S)
         if ok:
-            bus.info("TG", f"sibling cut: cam{cam} {dur:.1f}s @ {window_start:%H:%M:%S}")
+            bus.info("TG", f"sibling cut: cam{cam} @ {window_start:%H:%M:%S}")
         return ok
 
     _LIVE_MATCH_WINDOW_S = 180.0  # a live alert and its event share a wall-clock

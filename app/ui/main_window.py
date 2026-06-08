@@ -40,9 +40,11 @@ from app.core import detect_regions as dr
 from app.core import detlog
 from app.core import dvr_time
 from app.core import camera_links
+from app.core import detection_prefs
 from app.core.collision import CollisionMatcher
 from app.ui.camera_names_dialog import CameraNamesDialog
 from app.ui.camera_links_dialog import CameraLinksDialog
+from app.ui.detection_settings_dialog import DetectionSettingsDialog
 from app.ui.telegram_dialog import TelegramDialog
 from app.ui.camera_tile import CameraTile
 from app.ui.grid_focus import GridFocus
@@ -110,6 +112,16 @@ class MainWindow(QMainWindow):
         )
         self._notifier.set_cam_labels(self._cam_labels)
 
+        # Per-camera person-confidence floors: the .env baseline overlaid with the
+        # user's saved UI edits (.cctv-detection.json). A cam absent here is
+        # uncapped (keeps every person the model reports); a noisy view (door cam)
+        # carries a high floor so rubbish bags don't read as people. This is the
+        # ONLY person gate now (the global floor was removed).
+        self._person_floors: dict[int, float] = {
+            **settings.detection_person_conf_by_cam,
+            **detection_prefs.load(settings.env_path),
+        }
+
         # Real-time alert tier: instant person/vehicle alerts off the live
         # preview frames (separate from the delayed segment analyzer).
         # Quick clips go to recordings/live_clips (NOT events/), so the Events
@@ -127,7 +139,7 @@ class MainWindow(QMainWindow):
             clip_retention=settings.telegram_map_cap,
             person_conf=settings.detection_person_conf,
             min_box_frac=settings.detection_min_box_frac,
-            person_conf_by_cam=settings.detection_person_conf_by_cam,
+            person_conf_by_cam=self._person_floors,
             parent=self,
         )
         self._live_detector.live_alert.connect(self._on_live_alert)
@@ -270,6 +282,9 @@ class MainWindow(QMainWindow):
         self._act_links = system_menu.addAction("Camera Links…")
         self._act_links.setToolTip(
             "Tie two cameras at a crossing so one movement = one event")
+        self._act_detconf = system_menu.addAction("Detection Confidence…")
+        self._act_detconf.setToolTip(
+            "Per-camera person-confidence floor (0 = uncapped)")
         system_menu.addSeparator()
         act_wipe = system_menu.addAction("Wipe Data…")
         act_wipe.setToolTip("Delete recordings, caches and stored data (PIN-gated)")
@@ -280,6 +295,7 @@ class MainWindow(QMainWindow):
         self._act_rename.triggered.connect(self._open_rename_dialog)
         self._act_telegram.triggered.connect(self._open_telegram_dialog)
         self._act_links.triggered.connect(self._open_links_dialog)
+        self._act_detconf.triggered.connect(self._open_detconf_dialog)
         act_wipe.triggered.connect(self._open_wipe_dialog)
 
         self._system_btn.setMenu(system_menu)
@@ -352,6 +368,20 @@ class MainWindow(QMainWindow):
         camera_links.save(self._settings.env_path, self._camera_links)
         self._collision.set_links(self._camera_links)
         bus.info("LINK", f"camera links updated ({len(self._camera_links)} link(s))")
+
+    def _open_detconf_dialog(self) -> None:
+        dlg = DetectionSettingsDialog(self._cameras, dict(self._person_floors),
+                                      cam_labels=self._cam_labels, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        # Keep only the meaningful (capped) cameras; 0 means uncapped.
+        self._person_floors = {c: f for c, f in dlg.values().items() if f > 0.0}
+        detection_prefs.save(self._settings.env_path, self._person_floors)
+        self._live_detector.set_person_floor_by_cam(self._person_floors)
+        if getattr(self, "_analyzer", None) is not None:
+            self._analyzer.set_person_floor_by_cam(self._person_floors)
+        capped = ", ".join(f"cam{c}={f:g}" for c, f in sorted(self._person_floors.items()))
+        bus.info("CFG", f"detection floors updated ({capped or 'all uncapped'})")
 
     def _open_rename_dialog(self) -> None:
         dlg = CameraNamesDialog(self._cameras, dict(self._camera_names), parent=self)
@@ -686,7 +716,7 @@ class MainWindow(QMainWindow):
             model_path=model,
             conf=self._settings.detection_conf,
             person_conf=self._settings.detection_person_conf,
-            person_conf_by_cam=self._settings.detection_person_conf_by_cam,
+            person_conf_by_cam=self._person_floors,
             min_box_frac=self._settings.detection_min_box_frac,
             sample_seconds=self._settings.detection_sample_seconds,
             event_cfg=event_cfg,

@@ -6,10 +6,11 @@ extracted events for a short grace window and, using the hand-taught
 `camera_links`, decides when two of them are really ONE crossing:
 
   same movement  ⇔  the events sit on a link's two cameras
-                    AND one EXITS the link edge while the other ENTERS its edge
-                    AND the second starts within the link's transit window.
+                    AND both start within the same-event window (~6s).
+                    The exit/entry edges only choose which DIRECTION to show;
+                    they never block a fuse (an ambiguous edge still fuses).
 
-No person identity (no Re-ID) — purely time + which frame edge + direction.
+No person identity (no Re-ID) — purely time + the link + (for the label) edge.
 
 A match calls `on_collision(link, direction_label, from_clip, to_clip)`; an event
 that finds no partner before its grace expires is released via `on_single(clip)`
@@ -30,10 +31,12 @@ from app.core.log import bus
 # How long to hold a link-eligible event waiting for its partner from the other
 # camera. Segments are clock-aligned so siblings are analyzed back-to-back (a few
 # seconds apart), so a short hold suffices; keep it tight to avoid adding latency.
-_GRACE_S = 15.0
-# Timing slack around the transit window when matching two events by start time.
-_SLACK_BEFORE_S = 3.0   # the 'to' event may start slightly before the 'from'
-_MARGIN_AFTER_S = 6.0   # ...or a bit after the nominal transit time
+_GRACE_S = 12.0
+# Two events on a linked camera pair whose START times fall within this window are
+# the SAME crossing. This replaces the old per-link transit time, which dropped
+# real crossings whenever the travel-time guess was off — the family thinks in
+# terms of "around the same moment", so the matcher does too.
+_SAME_EVENT_WINDOW_S = 6.0
 
 
 def _start_epoch(clip):
@@ -99,35 +102,43 @@ class CollisionMatcher:
         self._pending = []
 
     def _match(self, x, y):
-        """If x and y are the same movement across a link, return
-        (link, direction_label, from_clip, to_clip); else None."""
+        """If x and y are the same crossing across a link, return
+        (link, direction_label, from_clip, to_clip); else None.
+
+        Fusion is by TIME (the same-event window) + the link's camera pair. The
+        exit/entry edges only choose which DIRECTION label to show; ambiguous
+        edges still fuse (earliest event first), so a real crossing is never
+        dropped just because the edges didn't line up."""
         cx, cy = getattr(x, "cam_id", 0), getattr(y, "cam_id", 0)
         if cx == cy:
             return None
+        ex, ey = _start_epoch(x), _start_epoch(y)
+        if ex is None or ey is None:
+            return None
+        if abs(ex - ey) > _SAME_EVENT_WINDOW_S:
+            return None
         for link in self._links:
-            pair = {link.cam_a, link.cam_b}
-            if {cx, cy} != pair:
+            if {cx, cy} != {link.cam_a, link.cam_b}:
                 continue
             by_cam = {cx: x, cy: y}
             a, b = by_cam[link.cam_a], by_cam[link.cam_b]
             # A -> B: a exits its edge, b enters its edge.
-            if self._fits(a, b, link.edge_a, link.edge_b, link.transit_s):
+            if self._edges_fit(a, b, link.edge_a, link.edge_b):
                 return (link, link.label_ab, a, b)
             # B -> A: b exits its edge, a enters its edge.
-            if self._fits(b, a, link.edge_b, link.edge_a, link.transit_s):
+            if self._edges_fit(b, a, link.edge_b, link.edge_a):
                 return (link, link.label_ba, b, a)
+            # Same moment on the linked pair, edges ambiguous: still ONE crossing.
+            if ex <= ey:
+                return (link, link.label_ab, x, y)
+            return (link, link.label_ab, y, x)
         return None
 
     @staticmethod
-    def _fits(frm, to, exit_edge, entry_edge, transit_s) -> bool:
+    def _edges_fit(frm, to, exit_edge, entry_edge) -> bool:
+        """True when frm exits exit_edge and to enters entry_edge (for the
+        direction label only). 'none' edges never line up."""
         if exit_edge == "none" or entry_edge == "none":
             return False
-        if getattr(frm, "exit_edge", "none") != exit_edge:
-            return False
-        if getattr(to, "entry_edge", "none") != entry_edge:
-            return False
-        e_from, e_to = _start_epoch(frm), _start_epoch(to)
-        if e_from is None or e_to is None:
-            return False
-        dt = e_to - e_from
-        return -_SLACK_BEFORE_S <= dt <= transit_s + _MARGIN_AFTER_S
+        return (getattr(frm, "exit_edge", "none") == exit_edge
+                and getattr(to, "entry_edge", "none") == entry_edge)

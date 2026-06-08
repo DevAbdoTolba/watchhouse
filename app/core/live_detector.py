@@ -278,6 +278,11 @@ class LiveDetector(QObject):
         """{cam_id: (x0,y0,x1,y1)} normalized detect rectangles (live tier)."""
         self._regions = dict(regions or {})
 
+    def set_person_floor_by_cam(self, floors: dict) -> None:
+        """Update per-camera person-confidence floors (live, thread-safe). A cam
+        absent from the dict is uncapped (keeps every person the model reports)."""
+        self._person_floor_by_cam = {int(c): float(f) for c, f in (floors or {}).items()}
+
     @Slot(int, QImage)
     def submit(self, cam_id: int, image: QImage) -> None:
         if not self.enabled or cam_id not in self._armed:

@@ -148,7 +148,10 @@ class Settings:
             recording_retention_minutes=_retention_minutes(),
             detection_enabled=_truthy(os.environ.get("DETECTION_ENABLED", "1")),
             detection_conf=float(os.environ.get("DETECTION_CONF", "0.35")),
-            detection_person_conf=float(os.environ.get("DETECTION_PERSON_CONF", "0.55")),
+            # Global person floor REMOVED by default (0): per-camera floors are the
+            # only person gate now, so faint real people on non-door cams aren't
+            # silently dropped. Door cam keeps its high floor via *_by_cam.
+            detection_person_conf=float(os.environ.get("DETECTION_PERSON_CONF", "0")),
             detection_person_conf_by_cam=_person_conf_by_cam(),
             detection_min_box_frac=float(os.environ.get("DETECTION_MIN_BOX_FRAC", "0.07")),
             detection_sample_seconds=float(os.environ.get("DETECTION_SAMPLE_SECONDS", "1.0")),

@@ -56,13 +56,17 @@ class TelegramMap:
             bus.warn("TG", f"could not write telegram map: {e!s}")
 
     def record(self, message_id: int | None, folder: str, cam: int, kind: str,
-               t: float = 0.0) -> None:
+               t: float = 0.0, extra: dict | None = None) -> None:
         if not message_id:
             return
         with self._lock:
             entry = {"f": folder, "c": int(cam), "k": kind}
             if t:
                 entry["t"] = float(t)  # epoch secs; live alerts use it to find the clip
+            if extra:
+                # A collision carries the SECOND event here (f2/c2) so its buttons
+                # can serve both clips / all union angles.
+                entry.update(extra)
             self._data[str(message_id)] = entry
             overflow = len(self._data) - self._cap
             if overflow > 0:  # drop oldest insertions (dict preserves order)
