@@ -672,6 +672,9 @@ class PlaybackView(QWidget):
                 t.load_path(None)
             self._cursor_label.setText("Select an event")
         else:
+            # Entering recordings mode: make sure the timeline's green/blue
+            # layers reflect the currently selected day (not a stale one).
+            self._apply_event_filters()
             self._load_all_at_cursor()
 
     def refresh_events(self) -> None:
@@ -1238,8 +1241,11 @@ class PlaybackView(QWidget):
         # they chose to browse history, so stop auto-advancing on them.
         days = event_dates(self._events)
         self._follow_latest_day = (not days) or (self._selected_day >= max(days))
+        # Refresh the green (events) + blue (pinned) timeline layers for the new
+        # day in BOTH modes. Recordings mode used to skip this, so the green
+        # markers stayed stuck on the startup day and older days looked empty.
+        self._apply_event_filters()
         if self._mode == "events":
-            self._apply_event_filters()
             return
         # Jump cursor to the start of the earliest clip that day (if any)
         first_dt: datetime | None = None

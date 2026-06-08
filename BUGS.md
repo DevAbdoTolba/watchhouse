@@ -11,6 +11,23 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 
 ## Open
 
+### BUG-010 — Timeline green event markers showed only for the current day
+- **Symptom (06/08):** in the recordings playback timeline, the green "event
+  available" spans appeared only on today; navigating to previous days showed
+  none — even though every prior day had events.
+- **Status:** FIXED (v0.4.71). NOT a data/retention issue: `scan_events` reads
+  all days and the event.json + thumb + cam*.mp4 all survive (verified: 5/30 →
+  190 spans, 6/6 → 197, etc.).
+- **Cause:** `PlaybackView._on_date_changed` only called `_apply_event_filters()`
+  (the sole refresher of the timeline's green/blue layers via `set_events`) in
+  **events** mode. The default **recordings** mode — the only mode where the
+  timeline is even visible — skipped it, so the green layer stayed frozen on the
+  startup day and older days looked empty.
+- **Fix:** call `_apply_event_filters()` on every day change in both modes, and
+  again when entering recordings mode, so the markers always match the selected
+  day. Verified the scan→events_for_day→group_sessions→spans chain yields green
+  for all 9 days on disk.
+
 ### BUG-009 — Detection silently stopped for ~16 h (app died, ffmpeg orphaned)
 - **Symptom (06/07):** "no detection history, nothing detected — threshold too
   high." In fact ZERO events from 06/06 23:30 through 06/07 ~15:46.
