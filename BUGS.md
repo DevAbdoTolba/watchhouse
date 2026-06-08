@@ -11,6 +11,26 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 
 ## Open
 
+### BUG-011 — Recordings playback laggy / stuttery / "sometimes never plays"
+- **Symptom (06/08):** local recorded video plays back jerky, drifts, and at
+  times won't play at all — "it's just local files, why lag?"
+- **Status:** FIXED (v0.4.72). NOT decode-bound: segments are 1280x720@15fps and
+  a single core decodes them at ~418 fps (28x real-time; HW accel was *slower*).
+- **Causes (3):** (1) recordings are separate 3-min files and the recordings
+  timeline never auto-advanced across them — video froze at each boundary while
+  the playhead kept sliding (auto-advance existed only in events mode); (2) the
+  still-recording tail segment has no moov atom yet, so it's unopenable and
+  "never plays" until it finalizes; (3) the playhead was a free-running wall-clock
+  estimate, not tied to the decoded frame, so it drifted ("missy"). Minor: each
+  tile smooth-scaled the full frame on every (incl. spontaneous) repaint.
+- **Fix:** PlaybackTile auto-advances into the next segment on eof and waits +
+  retries at the live edge (rolling in once the tail finalizes) instead of dead-
+  stopping; the recordings playhead is driven by the lead tile's REAL decode
+  position; the view re-pushes fresh clip lists so the tail is found fast; and
+  VideoPanel caches the fit-scale (one scale per frame/resize). Verified 11/11
+  behavioral cases on a real PlaybackTile (advance / live-edge wait / tail
+  roll-in / open-error wait / events-mode safety / pause).
+
 ### BUG-010 — Timeline green event markers showed only for the current day
 - **Symptom (06/08):** in the recordings playback timeline, the green "event
   available" spans appeared only on today; navigating to previous days showed

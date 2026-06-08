@@ -75,6 +75,7 @@ class VideoPanel(QWidget):
         self.setMinimumSize(160, 90)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._image: QImage | None = None
+        self._scaled: QImage | None = None  # cached fit-scale; rebuilt on frame/resize
         self._message: str | None = "Connecting"
         # Live-alert detect rectangle (normalized) + drag-editor state.
         self._region = list(dr.DEFAULT)
@@ -87,24 +88,34 @@ class VideoPanel(QWidget):
     @Slot(QImage)
     def set_frame(self, image: QImage) -> None:
         self._image = image
+        self._scaled = None  # new frame -> rebuild the fit-scale once, in paint
         self._message = None
         self.update()
 
     def set_message(self, message: str | None) -> None:
         self._image = None
+        self._scaled = None
         self._message = message
         self.update()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt)
+        self._scaled = None  # size changed -> the cached fit-scale is stale
+        super().resizeEvent(event)
 
     def paintEvent(self, _event) -> None:  # noqa: N802 (Qt)
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(theme.VIDEO_BG))
 
         if self._image is not None and not self._image.isNull():
-            scaled = self._image.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+            # Scale once per frame/resize, not on every (also spontaneous)
+            # repaint — smooth-scaling 4 tiles per frame was needless UI load.
+            if self._scaled is None:
+                self._scaled = self._image.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            scaled = self._scaled
             x = (self.width() - scaled.width()) // 2
             y = (self.height() - scaled.height()) // 2
             painter.drawImage(x, y, scaled)

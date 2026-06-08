@@ -101,6 +101,7 @@ class PlaybackTile(QFrame):
     """Header + VideoPanel + own PlaybackPlayer for one camera in playback mode."""
 
     double_clicked = Signal(int, bool)  # camera index, shift_held
+    tail_waiting = Signal(int)          # cam index: at the live edge, needs fresher clips
 
     def __init__(self, camera: Camera, parent=None) -> None:
         super().__init__(parent)
@@ -109,6 +110,11 @@ class PlaybackTile(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._camera = camera
         self._current_clip: Clip | None = None
+        # Continuous playback: recordings are separate 3-min files, so when one
+        # ends we roll straight into the next instead of dead-stopping.
+        self._day_clips: list[Clip] = []
+        self._auto_advance = False   # on in recordings mode, off in events mode
+        self._playing = False        # play *intent* (survives the per-clip eof pause)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -148,11 +154,29 @@ class PlaybackTile(QFrame):
         self._player.state_changed.connect(self._on_state)
         self._player.start()
 
+        # At the live edge the next 3-min segment isn't finalized yet (no moov
+        # atom -> unopenable); poll for it instead of dead-stopping.
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setInterval(2000)
+        self._retry_timer.timeout.connect(self._retry_tail)
+
     def shutdown(self, wait_ms: int = 2000) -> None:
         self._player.request_stop()
         self._player.wait(wait_ms)
 
+    def set_day_clips(self, clips: list[Clip]) -> None:
+        """Refresh this camera's clip list (the view re-pushes it as new tail
+        segments finalize) so auto-advance can find the next file."""
+        self._day_clips = clips
+
+    def set_auto_advance(self, on: bool) -> None:
+        self._auto_advance = on
+        if not on:
+            self._retry_timer.stop()
+
     def load_for(self, when: datetime, day_clips: list[Clip]) -> None:
+        self._day_clips = day_clips
+        self._retry_timer.stop()
         match = find_clip_at(day_clips, when)
         if match is None:
             self._current_clip = None
@@ -168,6 +192,39 @@ class PlaybackTile(QFrame):
         else:
             self._player.seek_seconds(offset)
 
+    def _next_clip(self) -> Clip | None:
+        """The earliest clip that starts after the current one (None at the
+        live edge). Tolerates gaps — it just jumps to whatever's next."""
+        if self._current_clip is None:
+            return None
+        cur = self._current_clip.start_at
+        later = [c for c in self._day_clips if c.start_at > cur]
+        return min(later, key=lambda c: c.start_at) if later else None
+
+    def _advance_to_next(self) -> None:
+        nxt = self._next_clip()
+        if nxt is not None:
+            self._retry_timer.stop()
+            self._current_clip = nxt
+            self._sub.setText(nxt.path.name)
+            self._player.load(nxt.path, start_offset_s=0.0)
+            self._player.play()
+        else:
+            # Live edge: the next segment isn't on disk / finalized yet.
+            self._sub.setText("recording…")
+            self.tail_waiting.emit(self._camera.index)
+            self._retry_timer.start()
+
+    @Slot()
+    def _retry_tail(self) -> None:
+        if not (self._auto_advance and self._playing):
+            self._retry_timer.stop()
+            return
+        if self._next_clip() is not None:
+            self._advance_to_next()
+        else:
+            self.tail_waiting.emit(self._camera.index)
+
     def load_path(self, path, sublabel: str = "") -> None:
         """Load a specific file at offset 0 (used by the Events view, where
         each tile plays one camera's clip of the selected event)."""
@@ -180,9 +237,20 @@ class PlaybackTile(QFrame):
         self._sub.setText(sublabel or path.name)
         self._player.load(path, start_offset_s=0.0)
 
-    def play(self) -> None: self._player.play()
-    def pause(self) -> None: self._player.pause()
-    def toggle(self) -> None: self._player.toggle()
+    def play(self) -> None:
+        self._playing = True
+        self._player.play()
+
+    def pause(self) -> None:
+        self._playing = False
+        self._retry_timer.stop()
+        self._player.pause()
+
+    def toggle(self) -> None:
+        self._playing = not self._playing
+        if not self._playing:
+            self._retry_timer.stop()
+        self._player.toggle()
     def set_speed(self, s: float) -> None: self._player.set_speed(s)
     def seek(self, seconds: float) -> None: self._player.seek_seconds(max(0.0, seconds))
     def set_overlay(self, track) -> None: self._player.set_overlay(track)
@@ -210,6 +278,17 @@ class PlaybackTile(QFrame):
 
     @Slot(str)
     def _on_state(self, state: str) -> None:
+        # Roll into the next 3-min segment instead of stopping at the boundary.
+        if state == "eof" and self._auto_advance and self._playing:
+            self._advance_to_next()
+            return
+        # A still-recording (unfinalized) segment can't be opened yet — wait for
+        # it to finalize rather than showing a dead "error".
+        if state == "error" and self._auto_advance and self._playing:
+            self._sub.setText("recording…")
+            self.tail_waiting.emit(self._camera.index)
+            self._retry_timer.start()
+            return
         if state == "empty":
             self._sub.setText("no clip")
         elif state == "eof":
@@ -335,6 +414,8 @@ class PlaybackView(QWidget):
             tile._player.position_changed.connect(self._on_player_position)
             tile._player.duration_known.connect(self._on_player_duration)
             tile._player.state_changed.connect(self._on_player_state)
+            tile.tail_waiting.connect(self._on_tile_tail_waiting)
+            tile.set_auto_advance(self._mode == "recordings")
 
         self.refresh_library()
         self._cursor_tick = QTimer(self)
@@ -657,6 +738,9 @@ class PlaybackView(QWidget):
         self._play_btn.set_kind(IconButton.KIND_PLAY)
         for t in self._tiles:
             t.pause()
+            # Auto-advance across 3-min segments only in recordings mode; events
+            # mode plays one finite clip per camera.
+            t.set_auto_advance(mode == "recordings")
             if mode == "recordings":
                 t.set_triggered(False)
                 t.set_overlay_enabled(False)
@@ -1192,6 +1276,11 @@ class PlaybackView(QWidget):
     def refresh_library(self) -> None:
         self._library = scan(self._settings.recording_dir)
         self._timeline.set_segments(self._library)
+        # Keep each tile's clip list current so auto-advance can roll into newly
+        # finalized tail segments without waiting on a full reload.
+        for tile in self._tiles:
+            tile.set_day_clips(
+                clips_for_day(self._library, tile._camera.index, self._selected_day))
         # Re-read pins so the blue layer reflects any KEEP/pin changes made in
         # the live view since we were last here.
         self._pins = Pins.load(self._settings.env_path)
@@ -1369,6 +1458,27 @@ class PlaybackView(QWidget):
         trig = self._trigger_tile()
         return trig is not None and self.sender() is trig._player
 
+    def _sender_tile(self) -> "PlaybackTile | None":
+        snd = self.sender()
+        for t in self._tiles:
+            if t._player is snd:
+                return t
+        return None
+
+    def _lead_tile(self) -> "PlaybackTile | None":
+        """The selected tile that drives the recordings playhead — the first
+        selected camera that currently has a clip loaded."""
+        for t in self._tiles:
+            if t._camera.index in self._selected_cams and t._current_clip is not None:
+                return t
+        return None
+
+    @Slot(int)
+    def _on_tile_tail_waiting(self, cam_id: int) -> None:
+        # A tile hit the live edge; rescan so a just-finalized next segment is
+        # on the lists, then the tile's retry tick rolls into it.
+        self.refresh_library()
+
     def _reset_scrub(self) -> None:
         """Zero the scrub bar + labels until the next duration_known arrives."""
         self._event_duration = 0.0
@@ -1423,6 +1533,16 @@ class PlaybackView(QWidget):
     def _on_player_position(self, pos: float) -> None:
         if self._mode == "events" and self._is_trigger_sender():
             self._scrub_on_position(pos)
+            return
+        # Recordings: drive the playhead off the lead tile's REAL decode
+        # position so the marker tracks the picture (no free-running drift).
+        if self._mode == "recordings" and self._is_playing:
+            tile = self._sender_tile()
+            if (tile is not None and tile is self._lead_tile()
+                    and tile._current_clip is not None):
+                self._cursor = tile._current_clip.start_at + timedelta(seconds=pos)
+                self._timeline.set_playhead(self._cursor)
+                self._update_cursor_label()
 
     @Slot(float)
     def _on_player_duration(self, dur: float) -> None:
@@ -1459,7 +1579,11 @@ class PlaybackView(QWidget):
             # In events mode the trigger player's real position_changed drives
             # _event_pos + the scrub bar; nothing to estimate here.
             return
-        # Advance by elapsed wall time * speed
+        # If a lead tile is actually playing a clip, its real position drives
+        # the cursor (see _on_player_position). Only estimate when nothing is
+        # playing — i.e. parked in a gap or waiting at the live edge.
+        if self._lead_tile() is not None:
+            return
         self._cursor = self._cursor + timedelta(seconds=0.25 * self._speed)
         self._timeline.set_playhead(self._cursor)
         self._update_cursor_label()
