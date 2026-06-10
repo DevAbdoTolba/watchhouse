@@ -4,7 +4,7 @@ A local AI surveillance platform for legacy DVRs. Native Windows desktop app
 that bridges 4 RTSP IP cameras hanging off a BitVision / Cantonk DVR and
 turns them into a smart event log. No cloud, no installer, no telemetry.
 
-Single self-contained `.exe`. Current release: **v0.4.77**.
+Single self-contained `.exe`. Current release: **v0.4.78**.
 
 ## What's shipped
 
@@ -202,6 +202,7 @@ classDiagram
 
     QFrame <|-- CameraTile
     QFrame <|-- PlaybackTile
+    QWidget <|-- TransportBar
     QWidget <|-- VideoPanel
     QWidget <|-- StatusDot
     QWidget <|-- EditableLabel
@@ -223,6 +224,11 @@ classDiagram
     class PlaybackView {
         playback master controller
     }
+    class TransportBar {
+        +step_requested(int) signal
+        +seek_requested(float) signal
+        play step speed boxes scrub controls
+    }
     class TimelineDrawer {
         +seek_requested(datetime) signal
     }
@@ -242,6 +248,7 @@ classDiagram
     CameraTile *-- EditableLabel
     CameraTile *-- StreamWorker
     PlaybackView *-- TimelineDrawer
+    PlaybackView *-- TransportBar
     PlaybackView *-- "4" PlaybackTile
     PlaybackView *-- EventsModel
     PlaybackTile *-- VideoPanel

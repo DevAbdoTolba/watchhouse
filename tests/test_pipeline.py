@@ -72,6 +72,9 @@ class MainWindowWiringTests(unittest.TestCase):
         win = MainWindow(settings)
         self.assertTrue(win._pipeline._live_thread.isRunning())
         self.assertEqual(len(win._tiles), 4)
+        # Exercise the real playback mode switch (transport bar wiring).
+        win._playback_view._set_mode("events")
+        win._playback_view._set_mode("recordings")
         win.close()  # real closeEvent: tiles -> pipeline -> playback
         self.assertFalse(win._pipeline._live_thread.isRunning())
 

@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -57,9 +56,9 @@ from app.ui.camera_tile import VideoPanel
 from app.ui.events_model import EventsModel, ThumbnailLoader
 from app.ui.events_scan_worker import EventsScanWorker
 from app.ui.grid_focus import GridFocus
-from app.ui.icon_button import IconButton
 from app.ui.import_clip_dialog import ImportClipDialog
 from app.ui.timeline_drawer import TimelineDrawer
+from app.ui.transport_bar import TransportBar
 
 
 class _StayOpenMenu(QMenu):
@@ -313,29 +312,6 @@ class PlaybackTile(QFrame):
             self._sub.setText("error")
 
 
-class _ScrubSlider(QSlider):
-    """Horizontal slider where clicking anywhere on the groove jumps the handle
-    to that spot (the default QSlider only page-steps toward a groove click)."""
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt)
-        if event.button() == Qt.MouseButton.LeftButton:
-            span = self.maximum() - self.minimum()
-            if span > 0 and self.width() > 0:
-                frac = event.position().x() / self.width()
-                frac = min(1.0, max(0.0, frac))
-                value = self.minimum() + round(frac * span)
-                self.setValue(value)
-                self.sliderPressed.emit()
-                self.sliderMoved.emit(value)
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt)
-        super().mouseReleaseEvent(event)
-        self.sliderReleased.emit()
-
-
 class PlaybackView(QWidget):
     """The PLAYBACK mode's central widget. Owns the calendar, camera
     checkboxes, the 4 PlaybackTiles, the timeline, and the transport."""
@@ -359,8 +335,7 @@ class PlaybackView(QWidget):
         self._follow_latest_day: bool = True
         self._cursor: datetime = datetime.combine(self._selected_day, _time(0, 0))
         self._is_playing = False
-        self._speed = 1.0
-        self._step_seconds = 5
+        self._speed = 1.0  # mirror of the transport's speed, for the cursor estimate
         # Events sub-mode: "recordings" (timeline scrubbing) | "events" (gallery)
         self._mode = "recordings"
         self._events: list[EventRecord] = []
@@ -381,7 +356,6 @@ class PlaybackView(QWidget):
         self._thumb_loader = ThumbnailLoader(self)
         self._event_pos = 0.0  # clip-relative seconds, for stepping + label
         self._event_duration = 0.0  # trigger clip length (s); 0 until known
-        self._scrubbing = False  # user is dragging the scrub bar right now
         self._event_conf_min = 0.0  # min human-detection confidence to show (0..1)
         self._event_cam_filter: set[int] = {c.index for c in cameras}  # trigger cams to show
         self._cam_filter_actions: dict[int, QAction] = {}
@@ -408,7 +382,8 @@ class PlaybackView(QWidget):
         self._timeline.seek_requested.connect(self._on_timeline_seek)
         right.addWidget(self._timeline)
 
-        right.addWidget(self._build_transport())
+        self._transport = self._build_transport()
+        right.addWidget(self._transport)
 
         right_wrap = QWidget(self)
         right_wrap.setLayout(right)
@@ -743,11 +718,11 @@ class PlaybackView(QWidget):
         self._events_section.setVisible(mode == "events")
         self._timeline.setVisible(mode == "recordings")
         # Scrub bar is the events-mode scrubber; recordings use the timeline.
-        self._scrub_row.setVisible(mode == "events")
+        self._transport.set_scrub_visible(mode == "events")
         # Stepping is finer inside short event clips.
-        self._set_step(1 if mode == "events" else 5)
+        self._transport.set_step(1 if mode == "events" else 5)
         self._is_playing = False
-        self._play_btn.set_kind(IconButton.KIND_PLAY)
+        self._transport.set_playing(False)
         for t in self._tiles:
             t.pause()
             # Auto-advance across 3-min segments only in recordings mode; events
@@ -766,7 +741,7 @@ class PlaybackView(QWidget):
             self.refresh_events()
             for t in self._tiles:
                 t.load_path(None)
-            self._cursor_label.setText("Select an event")
+            self._transport.set_cursor_text("Select an event")
         else:
             # Entering recordings mode: make sure the timeline's green/blue
             # layers reflect the currently selected day (not a stale one).
@@ -1009,7 +984,7 @@ class PlaybackView(QWidget):
         self._reset_scrub()
         # Selecting an event starts it immediately - no separate Play click.
         self._is_playing = True
-        self._play_btn.set_kind(IconButton.KIND_PAUSE)
+        self._transport.set_playing(True)
         for tile in self._tiles:
             idx = tile._camera.index
             clip = ev.clips.get(idx)
@@ -1023,7 +998,7 @@ class PlaybackView(QWidget):
                 tile.play()
             else:
                 tile.pause()
-        self._cursor_label.setText(
+        self._transport.set_cursor_text(
             f"{dvr_time.shift(ev.start_at):%Y-%m-%d %H:%M:%S}  ·  cam{ev.trigger_cam}  ·  {ev.pretty}"
         )
 
@@ -1112,8 +1087,9 @@ class PlaybackView(QWidget):
             pass
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.parent)))
 
-    def _toggle_boxes(self) -> None:
-        self._boxes_on = self._boxes_btn.isChecked()
+    @Slot(bool)
+    def _toggle_boxes(self, on: bool) -> None:
+        self._boxes_on = on
         ev = self._current_event
         for tile in self._tiles:
             is_trigger = ev is not None and tile._camera.index == ev.trigger_cam
@@ -1164,128 +1140,13 @@ class PlaybackView(QWidget):
             t.double_clicked.connect(self._grid_focus.handle_double_click)
         return wrap, tiles
 
-    def _build_transport(self) -> QWidget:
-        bar = QWidget(self)
-        bar.setObjectName("TransportBar")
-        bar.setFixedHeight(82)
-        outer = QVBoxLayout(bar)
-        outer.setContentsMargins(14, 6, 14, 6)
-        outer.setSpacing(6)
-
-        # Scrub row (events mode only): [cur] [=====slider=====] [total].
-        # Bound to the trigger camera's real decoder position; hidden in
-        # recordings mode, where the TimelineDrawer is the scrubber instead.
-        mono_font = QFont("Cascadia Code", 10)
-        self._scrub_row = QWidget(bar)
-        sr = QHBoxLayout(self._scrub_row)
-        sr.setContentsMargins(0, 0, 0, 0)
-        sr.setSpacing(10)
-        self._scrub_cur = QLabel("00:00", self._scrub_row)
-        self._scrub_cur.setObjectName("ScrubTime")
-        self._scrub_cur.setFont(mono_font)
-        self._scrub = _ScrubSlider(Qt.Orientation.Horizontal, self._scrub_row)
-        self._scrub.setObjectName("EventScrub")
-        self._scrub.setRange(0, 1000)
-        self._scrub.setEnabled(False)
-        self._scrub.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._scrub.sliderPressed.connect(self._scrub_pressed)
-        self._scrub.sliderMoved.connect(self._scrub_moved)
-        self._scrub.sliderReleased.connect(self._scrub_released)
-        self._scrub_total = QLabel("--:--", self._scrub_row)
-        self._scrub_total.setObjectName("ScrubTime")
-        self._scrub_total.setFont(mono_font)
-        sr.addWidget(self._scrub_cur)
-        sr.addWidget(self._scrub, 1)
-        sr.addWidget(self._scrub_total)
-        outer.addWidget(self._scrub_row)
-
-        row_wrap = QWidget(bar)
-        h = QHBoxLayout(row_wrap)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(10)
-
-        self._jump_back_btn = IconButton(IconButton.KIND_SKIP_BACK, "", bar)
-        self._jump_back_btn.setToolTip("Step back (uses the active step size)")
-        self._jump_back_btn.clicked.connect(lambda: self._jump_relative(-self._step_seconds))
-
-        self._play_btn = IconButton(IconButton.KIND_PLAY, "", bar)
-        self._play_btn.setFixedSize(46, 32)
-        self._play_btn.setToolTip("Play / Pause")
-        self._play_btn.clicked.connect(self._toggle_play)
-
-        self._jump_fwd_btn = IconButton(IconButton.KIND_SKIP_FWD, "", bar)
-        self._jump_fwd_btn.setToolTip("Step forward (uses the active step size)")
-        self._jump_fwd_btn.clicked.connect(lambda: self._jump_relative(self._step_seconds))
-
-        h.addWidget(self._jump_back_btn)
-        h.addWidget(self._play_btn)
-        h.addWidget(self._jump_fwd_btn)
-
-        h.addSpacing(16)
-
-        step_label = QLabel("STEP", bar)
-        step_label.setObjectName("DialogFieldLabel")
-        h.addWidget(step_label)
-        self._step_buttons: dict[int, QPushButton] = {}
-        for sec, lbl in ((1, "1s"), (5, "5s"), (15, "15s"), (60, "1m")):
-            b = QPushButton(lbl, bar)
-            b.setObjectName("SpeedButton")
-            b.setCheckable(True)
-            b.setFixedSize(36, 24)
-            b.setChecked(sec == self._step_seconds)
-            b.clicked.connect(lambda _checked, s=sec: self._set_step(s))
-            self._step_buttons[sec] = b
-            h.addWidget(b)
-
-        h.addSpacing(16)
-
-        speed_label = QLabel("SPEED", bar)
-        speed_label.setObjectName("DialogFieldLabel")
-        h.addWidget(speed_label)
-        # Compact speed stepper: ‹ [1×] › cycles .25 .5 1 2 4 8 16 without a
-        # long button row or a dropdown. The middle pill shows the current
-        # value (click to snap back to 1×); the arrows step and auto-disable
-        # at the ends.
-        self._speeds = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
-        self._speed_idx = self._speeds.index(1.0)
-        self._speed_down = QPushButton("‹", bar)
-        self._speed_down.setObjectName("SpeedButton")
-        self._speed_down.setFixedSize(24, 24)
-        self._speed_down.setToolTip("Slower")
-        self._speed_down.clicked.connect(lambda: self._step_speed(-1))
-        self._speed_pill = QPushButton("1×", bar)
-        self._speed_pill.setObjectName("SpeedButton")
-        self._speed_pill.setCheckable(True)
-        self._speed_pill.setChecked(True)
-        self._speed_pill.setFixedSize(46, 24)
-        self._speed_pill.setToolTip("Playback speed — click to reset to 1×")
-        self._speed_pill.clicked.connect(lambda: self._set_speed(1.0))
-        self._speed_up = QPushButton("›", bar)
-        self._speed_up.setObjectName("SpeedButton")
-        self._speed_up.setFixedSize(24, 24)
-        self._speed_up.setToolTip("Faster")
-        self._speed_up.clicked.connect(lambda: self._step_speed(1))
-        h.addWidget(self._speed_down)
-        h.addWidget(self._speed_pill)
-        h.addWidget(self._speed_up)
-
-        h.addSpacing(16)
-        self._boxes_btn = QPushButton("BOXES", bar)
-        self._boxes_btn.setObjectName("SpeedButton")
-        self._boxes_btn.setCheckable(True)
-        self._boxes_btn.setChecked(self._boxes_on)
-        self._boxes_btn.setFixedSize(52, 24)
-        self._boxes_btn.setToolTip("Show detection bounding boxes over event playback")
-        self._boxes_btn.clicked.connect(self._toggle_boxes)
-        h.addWidget(self._boxes_btn)
-
-        h.addStretch(1)
-
-        self._cursor_label = QLabel("--:--:--", bar)
-        self._cursor_label.setObjectName("StatusBarText")
-        h.addWidget(self._cursor_label)
-
-        outer.addWidget(row_wrap)
+    def _build_transport(self) -> TransportBar:
+        bar = TransportBar(boxes_on=self._boxes_on, parent=self)
+        bar.play_toggled.connect(self._toggle_play)
+        bar.step_requested.connect(self._jump_relative)
+        bar.speed_changed.connect(self._on_speed_changed)
+        bar.boxes_toggled.connect(self._toggle_boxes)
+        bar.seek_requested.connect(self._on_scrub_seek)
         return bar
 
     # --- Library / day ---
@@ -1396,7 +1257,7 @@ class PlaybackView(QWidget):
 
     def _toggle_play(self) -> None:
         self._is_playing = not self._is_playing
-        self._play_btn.set_kind(IconButton.KIND_PAUSE if self._is_playing else IconButton.KIND_PLAY)
+        self._transport.set_playing(self._is_playing)
         for tile in self._tiles:
             if self._mode == "events":
                 active = self._current_event is not None and tile._camera.index in self._current_event.clips
@@ -1417,50 +1278,19 @@ class PlaybackView(QWidget):
             for tile in self._tiles:
                 if tile._camera.index in self._current_event.clips:
                     tile.seek(target)
-            self._sync_scrub_to_pos(target)
+            self._transport.sync_scrub(target)
             self._update_event_label()
             return
         self._cursor = self._cursor + timedelta(seconds=seconds)
         self._load_all_at_cursor()
 
-    def _step_speed(self, direction: int) -> None:
-        idx = max(0, min(len(self._speeds) - 1, self._speed_idx + direction))
-        self._set_speed(self._speeds[idx])
-
-    def _set_speed(self, s: float) -> None:
-        # Snap to the nearest preset so the pill always shows a real value.
-        if s in self._speeds:
-            self._speed_idx = self._speeds.index(s)
-        else:
-            self._speed_idx = min(
-                range(len(self._speeds)),
-                key=lambda i: abs(self._speeds[i] - s),
-            )
-            s = self._speeds[self._speed_idx]
-        self._speed = s
-        self._speed_pill.setText(f"{s:g}×")
-        self._speed_pill.setChecked(True)
-        self._speed_down.setEnabled(self._speed_idx > 0)
-        self._speed_up.setEnabled(self._speed_idx < len(self._speeds) - 1)
+    @Slot(float)
+    def _on_speed_changed(self, s: float) -> None:
+        self._speed = s  # the gap-cursor estimate in _advance_cursor uses it
         for tile in self._tiles:
             tile.set_speed(s)
 
-    def _set_step(self, seconds: int) -> None:
-        self._step_seconds = seconds
-        for sec, btn in self._step_buttons.items():
-            btn.setChecked(sec == seconds)
-
-    # --- Event scrub bar ---
-
-    @staticmethod
-    def _format_secs(seconds: float) -> str:
-        """Seconds -> MM:SS (or H:MM:SS past an hour)."""
-        total = int(max(0.0, seconds))
-        h, rem = divmod(total, 3600)
-        m, s = divmod(rem, 60)
-        if h:
-            return f"{h}:{m:02d}:{s:02d}"
-        return f"{m:02d}:{s:02d}"
+    # --- Event scrub bar (controls live in TransportBar) ---
 
     def _trigger_tile(self) -> "PlaybackTile | None":
         """The reference tile for the current event (the trigger camera)."""
@@ -1504,52 +1334,27 @@ class PlaybackView(QWidget):
     def _reset_scrub(self) -> None:
         """Zero the scrub bar + labels until the next duration_known arrives."""
         self._event_duration = 0.0
-        self._scrubbing = False
-        self._scrub.blockSignals(True)
-        self._scrub.setValue(0)
-        self._scrub.blockSignals(False)
-        self._scrub.setEnabled(False)
-        self._scrub_cur.setText("00:00")
-        self._scrub_total.setText("--:--")
-
-    def _sync_scrub_to_pos(self, seconds: float) -> None:
-        """Move the slider + current-time label to match `seconds` (no signals)."""
-        if self._event_duration > 0:
-            permille = round(seconds / self._event_duration * 1000)
-            permille = min(1000, max(0, permille))
-            self._scrub.blockSignals(True)
-            self._scrub.setValue(permille)
-            self._scrub.blockSignals(False)
-        self._scrub_cur.setText(self._format_secs(seconds))
+        self._transport.reset_scrub()
 
     def _scrub_on_duration(self, dur: float) -> None:
         self._event_duration = float(dur or 0.0)
-        if self._event_duration > 0:
-            self._scrub.setEnabled(True)
-            self._scrub_total.setText(self._format_secs(self._event_duration))
-        else:
-            self._scrub.setEnabled(False)
-            self._scrub_total.setText("--:--")
+        self._transport.set_duration(self._event_duration)
 
     def _scrub_on_position(self, pos: float) -> None:
         self._event_pos = float(pos or 0.0)
-        if not self._scrubbing:
-            self._sync_scrub_to_pos(self._event_pos)
+        self._transport.sync_scrub(self._event_pos)  # no-op mid-drag
         self._update_event_label()
 
-    def _scrub_seek_to_permille(self, value: int) -> float:
-        """Seek every angle of the current event to the given permille spot."""
-        if self._event_duration <= 0:
-            return 0.0
-        seconds = value / 1000.0 * self._event_duration
+    @Slot(float)
+    def _on_scrub_seek(self, seconds: float) -> None:
+        """User scrubbed: seek every angle of the current event."""
+        if self._current_event is None:
+            return
         for tile in self._tiles:
-            if (self._current_event is not None
-                    and tile._camera.index in self._current_event.clips):
+            if tile._camera.index in self._current_event.clips:
                 tile.seek(seconds)
         self._event_pos = seconds
-        self._scrub_cur.setText(self._format_secs(seconds))
         self._update_event_label()
-        return seconds
 
     @Slot(float)
     def _on_player_position(self, pos: float) -> None:
@@ -1576,23 +1381,7 @@ class PlaybackView(QWidget):
         # When the trigger clip ends, leave the bar pinned at the end.
         if (state == "eof" and self._mode == "events"
                 and self._is_trigger_sender() and self._event_duration > 0):
-            self._scrub.blockSignals(True)
-            self._scrub.setValue(1000)
-            self._scrub.blockSignals(False)
-            self._scrub_cur.setText(self._format_secs(self._event_duration))
-
-    @Slot()
-    def _scrub_pressed(self) -> None:
-        self._scrubbing = True
-
-    @Slot(int)
-    def _scrub_moved(self, value: int) -> None:
-        self._scrub_seek_to_permille(value)
-
-    @Slot()
-    def _scrub_released(self) -> None:
-        self._scrub_seek_to_permille(self._scrub.value())
-        self._scrubbing = False
+            self._transport.pin_scrub_to_end()
 
     def _advance_cursor(self) -> None:
         if not self._is_playing:
@@ -1614,13 +1403,14 @@ class PlaybackView(QWidget):
         ev = self._current_event
         if ev is None:
             return
-        self._cursor_label.setText(
+        self._transport.set_cursor_text(
             f"{dvr_time.shift(ev.start_at):%H:%M:%S}  +{self._event_pos:0.0f}s  ·  "
             f"cam{ev.trigger_cam}  ·  {ev.pretty}"
         )
 
     def _update_cursor_label(self) -> None:
-        self._cursor_label.setText(dvr_time.shift(self._cursor).strftime("%Y-%m-%d  %H:%M:%S"))
+        self._transport.set_cursor_text(
+            dvr_time.shift(self._cursor).strftime("%Y-%m-%d  %H:%M:%S"))
 
     def shutdown(self) -> None:
         self._refresh_timer.stop()
