@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from app.core import camera_names
 from app.core import dvr_time
+from app.core import footage_spans
 from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
 from app.core.pins import Pins
@@ -860,28 +861,9 @@ class PlaybackView(QWidget):
         return out
 
     def _pinned_spans_by_cam(self) -> dict:
-        """Blue-layer spans per camera: imported clips (per camera) + pinned
-        ranges + the live keep window (the last two apply to every camera)."""
-        out: dict[int, list] = {}
-        try:
-            imported_root = str(
-                (self._settings.recording_dir / "imported").resolve()).lower()
-        except OSError:
-            imported_root = ""
-        for cam, clips in self._library.items():
-            for c in clips:
-                try:
-                    if imported_root and imported_root in str(
-                            Path(c.path).resolve()).lower():
-                        out.setdefault(cam, []).append(
-                            (c.start_at, c.end_at_estimated))
-                except OSError:
-                    continue
-        spans = self._pins.all_spans(datetime.now())
-        if spans:
-            for c in self._cameras:
-                out.setdefault(c.index, []).extend(spans)
-        return out
+        return footage_spans.pinned_spans_by_cam(
+            self._library, self._pins, self._cameras,
+            self._settings.recording_dir / "imported")
 
     def _pin_range(self) -> None:
         start, end = self._timeline.selected_range()
@@ -889,7 +871,7 @@ class PlaybackView(QWidget):
             self._pin_status.setText("Frame a window on the timeline first.")
             return
         # Lock only footage that actually exists in the window — never the gaps.
-        subs = self._recorded_subranges(start, end)
+        subs = footage_spans.recorded_subranges(self._library, start, end)
         if not subs:
             self._pin_status.setText("No footage in that window to lock.")
             return
@@ -899,18 +881,6 @@ class PlaybackView(QWidget):
         self._refresh_pin_status()
         bus.info("REC", f"locked {len(subs)} footage span(s) in "
                         f"{start:%H:%M:%S}–{end:%H:%M:%S}")
-
-    def _recorded_subranges(self, start, end) -> list:
-        """Intersections of [start, end] with clips that actually exist (any
-        camera), so locking covers real footage only and never empty gaps."""
-        spans = []
-        for clips in self._library.values():
-            for c in clips:
-                lo = max(start, c.start_at)
-                hi = min(end, c.end_at_estimated)
-                if hi > lo:
-                    spans.append((lo, hi))
-        return spans
 
     def _unpin_range(self) -> None:
         start, end = self._timeline.selected_range()
