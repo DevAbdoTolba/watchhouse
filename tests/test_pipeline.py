@@ -15,13 +15,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-# Must be set before Settings.load(): the repo .env is loaded with
-# override=False, so pre-set env vars win.
-os.environ["RECORDING_ENABLED"] = "0"
-os.environ["WATCHDOG_ENABLED"] = "0"
-os.environ["TELEGRAM_BOT_TOKEN"] = ""
-os.environ["TELEGRAM_CHAT_ID"] = ""
-os.environ["TELEGRAM_COMMANDS"] = "0"
+
+# Must be set before Settings.load() (the repo .env loads with override=False,
+# so pre-set env vars win). Applied per-setUp, not at import: unittest imports
+# every test module before running any test, so module-level assignments from
+# sibling modules would leak into ours.
+_ENV = {
+    "RECORDING_ENABLED": "0",
+    "WATCHDOG_ENABLED": "0",
+    "TELEGRAM_BOT_TOKEN": "",
+    "TELEGRAM_CHAT_ID": "",
+    "TELEGRAM_COMMANDS": "0",
+}
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
@@ -59,6 +64,7 @@ class MainWindowWiringTests(unittest.TestCase):
     def test_constructs_and_closes_cleanly(self) -> None:
         tmp = tempfile.TemporaryDirectory(prefix="wh_mw_")
         self.addCleanup(tmp.cleanup)
+        os.environ.update(_ENV)
         os.environ["RECORDING_DIR"] = tmp.name
         settings = Settings.load()
 
@@ -74,6 +80,7 @@ class PipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="wh_pl_")
         self.addCleanup(self._tmp.cleanup)
+        os.environ.update(_ENV)
         os.environ["RECORDING_DIR"] = self._tmp.name
         settings = Settings.load()
         self.pipe = Pipeline(settings, default_cameras(), {1, 2, 3, 4},

@@ -41,15 +41,11 @@ from app.core import dvr_time
 from app.core import camera_links
 from app.core import detection_prefs
 from app.core import watchdog
-from app.ui.camera_names_dialog import CameraNamesDialog
-from app.ui.camera_links_dialog import CameraLinksDialog
-from app.ui.detection_settings_dialog import DetectionSettingsDialog
-from app.ui.telegram_dialog import TelegramDialog
 from app.ui.camera_tile import CameraTile
 from app.ui.grid_focus import GridFocus
 from app.ui.console_panel import ConsolePanel
 from app.ui.playback_view import PlaybackView
-from app.ui.wipe_dialog import WipeDialog
+from app.ui.settings_dialog import SettingsDialog
 
 
 class MainWindow(QMainWindow):
@@ -233,39 +229,15 @@ class MainWindow(QMainWindow):
         self._act_discover = system_menu.addAction("Discover DVR on LAN")
         self._act_pbprobe  = system_menu.addAction("Probe Playback Protocols")
         system_menu.addSeparator()
-        self._act_rename   = system_menu.addAction("Rename Cameras…")
-        self._act_rename.setToolTip("Set a friendly name per camera (alerts + tiles)")
-        self._act_telegram = system_menu.addAction("Telegram Alerts…")
-        self._act_telegram.setToolTip("Link a Telegram bot for off-device push alerts")
-        self._act_links = system_menu.addAction("Camera Links…")
-        self._act_links.setToolTip(
-            "Tie two cameras at a crossing so one movement = one event")
-        self._act_detconf = system_menu.addAction("Detection Confidence…")
-
-        system_menu.addSeparator()
-        self._act_watchdog = system_menu.addAction("Auto-restart watchdog")
-        self._act_watchdog.setCheckable(True)
-        self._act_watchdog.setChecked(
-            watchdog.enabled(self._settings.recording_dir,
-                             default=self._settings.watchdog_enabled))
-        self._act_watchdog.setToolTip(
-            "Relaunch Watchhouse automatically if it dies or hangs, and ping "
-            "Telegram. Turn off to manage it yourself.")
-        self._act_watchdog.toggled.connect(self._toggle_watchdog)
-        self._act_detconf.setToolTip(
-            "Per-camera person-confidence floor (0 = uncapped)")
-        system_menu.addSeparator()
-        act_wipe = system_menu.addAction("Wipe Data…")
-        act_wipe.setToolTip("Delete recordings, caches and stored data (PIN-gated)")
+        act_settings = system_menu.addAction("Settings…")
+        act_settings.setToolTip(
+            "Cameras, detection, Telegram, camera links, system (incl. "
+            "watchdog + wipe)")
 
         self._act_probe.triggered.connect(self._run_probe)
         self._act_discover.triggered.connect(self._run_discovery)
         self._act_pbprobe.triggered.connect(self._run_pbprobe)
-        self._act_rename.triggered.connect(self._open_rename_dialog)
-        self._act_telegram.triggered.connect(self._open_telegram_dialog)
-        self._act_links.triggered.connect(self._open_links_dialog)
-        self._act_detconf.triggered.connect(self._open_detconf_dialog)
-        act_wipe.triggered.connect(self._open_wipe_dialog)
+        act_settings.triggered.connect(self._open_settings_dialog)
 
         self._system_btn.setMenu(system_menu)
 
@@ -299,62 +271,64 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._system_btn)
         return bar
 
-    def _open_wipe_dialog(self) -> None:
-        dlg = WipeDialog(self._settings, expected_pin="123", parent=self)
-        dlg.exec()
-
-    def _open_telegram_dialog(self) -> None:
-        dlg = TelegramDialog(
-            self._settings.telegram_bot_token,
-            self._settings.telegram_chat_id,
-            commands_enabled=self._settings.telegram_commands,
-            lang=self._settings.telegram_lang,
+    def _open_settings_dialog(self) -> None:
+        wd_before = watchdog.enabled(self._settings.recording_dir,
+                                     default=self._settings.watchdog_enabled)
+        dlg = SettingsDialog(
+            self._cameras, self._settings,
+            names=dict(self._camera_names),
+            floors=dict(self._person_floors),
+            links=self._camera_links,
+            cam_labels=self._cam_labels,
+            watchdog_on=wd_before,
             parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        token, chat_id, commands, lang = dlg.values()
-        persist_env_values(self._settings, {
-            "TELEGRAM_BOT_TOKEN": token,
-            "TELEGRAM_CHAT_ID": chat_id,
-            "TELEGRAM_COMMANDS": "1" if commands else "0",
-            "TELEGRAM_LANG": lang,
-        })
-        self._settings = replace(
-            self._settings, telegram_bot_token=token, telegram_chat_id=chat_id,
-            telegram_commands=commands, telegram_lang=lang,
-        )
-        self._pipeline.configure_telegram(token, chat_id,
-                                          commands_enabled=commands, lang=lang)
-        bus.info("APP", "Telegram settings updated")
 
-    def _open_links_dialog(self) -> None:
-        dlg = CameraLinksDialog(self._cameras, self._camera_links,
-                                cam_labels=self._cam_labels, parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        self._camera_links = dlg.values()
-        camera_links.save(self._settings.env_path, self._camera_links)
-        self._pipeline.set_links(self._camera_links)
-        bus.info("LINK", f"camera links updated ({len(self._camera_links)} link(s))")
+        self._apply_camera_names(dlg.cameras_page.names())
 
-    def _open_detconf_dialog(self) -> None:
-        dlg = DetectionSettingsDialog(self._cameras, dict(self._person_floors),
-                                      cam_labels=self._cam_labels, parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
         # Keep only the meaningful (capped) cameras; 0 means uncapped.
-        self._person_floors = {c: f for c, f in dlg.values().items() if f > 0.0}
+        self._person_floors = {
+            c: f for c, f in dlg.detection_page.values().items() if f > 0.0
+        }
         detection_prefs.save(self._settings.env_path, self._person_floors)
         self._pipeline.set_person_floors(self._person_floors)
-        capped = ", ".join(f"cam{c}={f:g}" for c, f in sorted(self._person_floors.items()))
-        bus.info("CFG", f"detection floors updated ({capped or 'all uncapped'})")
 
-    def _open_rename_dialog(self) -> None:
-        dlg = CameraNamesDialog(self._cameras, dict(self._camera_names), parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        self._camera_names = dlg.names()
+        self._camera_links = dlg.links_page.values()
+        camera_links.save(self._settings.env_path, self._camera_links)
+        self._pipeline.set_links(self._camera_links)
+
+        # Telegram is applied only on change: reconfigure restarts the reply
+        # poller and clears the debounce state, so don't churn it needlessly.
+        token, chat_id, commands, lang = dlg.telegram_page.values()
+        if (token, chat_id, commands, lang) != (
+                self._settings.telegram_bot_token,
+                self._settings.telegram_chat_id,
+                self._settings.telegram_commands,
+                self._settings.telegram_lang):
+            persist_env_values(self._settings, {
+                "TELEGRAM_BOT_TOKEN": token,
+                "TELEGRAM_CHAT_ID": chat_id,
+                "TELEGRAM_COMMANDS": "1" if commands else "0",
+                "TELEGRAM_LANG": lang,
+            })
+            self._settings = replace(
+                self._settings, telegram_bot_token=token,
+                telegram_chat_id=chat_id, telegram_commands=commands,
+                telegram_lang=lang,
+            )
+            self._pipeline.configure_telegram(
+                token, chat_id, commands_enabled=commands, lang=lang)
+
+        wd_after = dlg.system_page.watchdog_enabled()
+        if wd_after != wd_before:
+            self._apply_watchdog(wd_after)
+        bus.info("APP", "settings saved")
+
+    def _apply_camera_names(self, names: dict[int, str]) -> None:
+        """Persist custom names and refresh every surface that shows them."""
+        self._camera_names = names
         camera_names.save(self._settings.env_path, self._camera_names)
         self._cam_labels = {
             c.index: self._effective_cam_name(c) for c in self._cameras
@@ -362,7 +336,6 @@ class MainWindow(QMainWindow):
         for tile, cam in zip(self._tiles, self._cameras):
             tile.set_display_name(self._cam_labels[cam.index])
         self._pipeline.set_cam_labels(self._cam_labels)
-        bus.info("APP", "camera names updated")
 
     @Slot(int, str)
     def _on_tile_renamed(self, cam_index: int, raw: str) -> None:
@@ -371,18 +344,13 @@ class MainWindow(QMainWindow):
         if cam is None:
             return
         default = getattr(cam, "location", None) or getattr(cam, "label", None) or ""
+        names = dict(self._camera_names)
         # Typing the default (or clearing the field) means "no custom name".
         if not name or name == default:
-            self._camera_names.pop(cam_index, None)
+            names.pop(cam_index, None)
         else:
-            self._camera_names[cam_index] = name
-        camera_names.save(self._settings.env_path, self._camera_names)
-        self._cam_labels = {
-            c.index: self._effective_cam_name(c) for c in self._cameras
-        }
-        for tile, c in zip(self._tiles, self._cameras):
-            tile.set_display_name(self._cam_labels[c.index])
-        self._pipeline.set_cam_labels(self._cam_labels)
+            names[cam_index] = name
+        self._apply_camera_names(names)
         bus.info("APP", f"cam{cam_index} renamed -> {self._cam_labels[cam_index]}")
 
     def _set_mode(self, mode: str) -> None:
@@ -555,8 +523,7 @@ class MainWindow(QMainWindow):
         # Recorder, analyzer, watchdog heartbeat — all backend.
         self._pipeline.start()
 
-    @Slot(bool)
-    def _toggle_watchdog(self, on: bool) -> None:
+    def _apply_watchdog(self, on: bool) -> None:
         rec_dir = self._settings.recording_dir
         watchdog.set_enabled(rec_dir, on)
         if on:

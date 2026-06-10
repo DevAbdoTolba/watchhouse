@@ -118,6 +118,7 @@ class Settings:
     # live toggle persists to .watchhouse-watchdog.json (see core.watchdog).
     watchdog_enabled: bool
     watchdog_idle_minutes: float   # heartbeat older than this => app down/hung
+    wipe_pin: str                  # gate for the destructive Wipe Data dialog
 
     @classmethod
     def load(cls) -> "Settings":
@@ -187,6 +188,7 @@ class Settings:
             event_notify_ongoing=_truthy(os.environ.get("EVENT_NOTIFY_ONGOING", "1")),
             watchdog_enabled=_truthy(os.environ.get("WATCHDOG_ENABLED", "1")),
             watchdog_idle_minutes=float(os.environ.get("WATCHDOG_IDLE_MINUTES", "2")),
+            wipe_pin=os.environ.get("WIPE_PIN", "").strip() or "123",
         )
         bus.info(
             "CFG",
