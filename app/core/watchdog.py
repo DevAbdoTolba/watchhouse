@@ -216,7 +216,7 @@ def _alert(settings, rec_dir: Path, key: str, **kw) -> None:
         return
     try:
         from app.core import telegram_text as tg
-        from app.core.notifier import api_send_message
+        from app.core.telegram_api import api_send_message
         api_send_message(token, chat, tg.t(settings.telegram_lang, key, **kw))
     except Exception as exc:  # noqa: BLE001 — never let an alert kill the loop
         _log(rec_dir, f"telegram alert failed: {exc}")

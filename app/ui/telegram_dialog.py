@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import notifier
+from app.core import telegram_api
 
 
 class _NetSignals(QObject):
@@ -46,10 +46,10 @@ class _NetTask(QRunnable):
 
     def run(self) -> None:
         if self._kind == "detect":
-            cid, msg = notifier.detect_chat_id(self._token)
+            cid, msg = telegram_api.detect_chat_id(self._token)
             self._signals.done.emit("detect", cid is not None, cid or "", msg)
         else:
-            ok, msg = notifier.send_test(self._token, self._chat_id)
+            ok, msg = telegram_api.send_test(self._token, self._chat_id)
             self._signals.done.emit("test", ok, self._chat_id, msg)
 
 

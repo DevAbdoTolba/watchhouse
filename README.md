@@ -4,7 +4,7 @@ A local AI surveillance platform for legacy DVRs. Native Windows desktop app
 that bridges 4 RTSP IP cameras hanging off a BitVision / Cantonk DVR and
 turns them into a smart event log. No cloud, no installer, no telemetry.
 
-Single self-contained `.exe`. Current release: **v0.4.73**.
+Single self-contained `.exe`. Current release: **v0.4.74**.
 
 ## What's shipped
 
@@ -283,8 +283,9 @@ classDiagram
 > Legend: `<|--` inheritance · `*--` composition (owns/creates) · `o--` aggregation
 > (holds a reference) · `..>` dependency (produces / consumes). A handful of helpers
 > are intentionally module-level functions rather than classes — `dvr_time` (display
-> offset), `detlog` (detection log), `frames` (worker-side frame scaling), and the
-> `log` bus singleton.
+> offset), `detlog` (detection log), `frames` (worker-side frame scaling),
+> `telegram_api` (pure Bot-API client used by the notifier, tasks, poller and
+> watchdog), and the `log` bus singleton.
 
 ## Run from source
 
