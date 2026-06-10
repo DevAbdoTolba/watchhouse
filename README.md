@@ -4,7 +4,7 @@ A local AI surveillance platform for legacy DVRs. Native Windows desktop app
 that bridges 4 RTSP IP cameras hanging off a BitVision / Cantonk DVR and
 turns them into a smart event log. No cloud, no installer, no telemetry.
 
-Single self-contained `.exe`. Current release: **v0.4.74**.
+Single self-contained `.exe`. Current release: **v0.4.75**.
 
 ## What's shipped
 
@@ -100,6 +100,7 @@ classDiagram
     QObject <|-- LiveDetector
     QObject <|-- RecorderSupervisor
     QObject <|-- TelegramNotifier
+    QObject <|-- UiLoopProbe
     QThread <|-- StreamWorker
     QThread <|-- PlaybackPlayer
     QThread <|-- RecorderWorker
@@ -156,7 +157,11 @@ classDiagram
     class TelegramMap {
         message_id to event folder
     }
+    class UiLoopProbe {
+        event-loop lag probe, PERF channel
+    }
 
+    MainWindow *-- UiLoopProbe
     MainWindow *-- RecorderSupervisor
     MainWindow *-- SegmentAnalyzer
     MainWindow *-- LiveDetector

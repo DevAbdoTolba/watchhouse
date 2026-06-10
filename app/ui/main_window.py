@@ -34,6 +34,7 @@ from app.core.probe import ProbeWorker
 from app.core import camera_names
 from app.core.analyzer import SegmentAnalyzer
 from app.core.events import EventConfig
+from app.core.perf import UiLoopProbe
 from app.core.notifier import TelegramNotifier
 from app.core.live_detector import LiveDetector
 from app.core.recorder import RecorderSupervisor
@@ -197,6 +198,10 @@ class MainWindow(QMainWindow):
         self._refresh_clock = QTimer(self)
         self._refresh_clock.timeout.connect(self._update_status_bar)
         self._refresh_clock.start(1000)
+
+        # Event-loop lag probe: one PERF summary line per ~30s window; WARN
+        # when a tick stalls, so UI-thread regressions are caught by numbers.
+        self._ui_probe = UiLoopProbe(self)
 
         bus.info("APP", f"Watchhouse v{__version__} starting")
 
@@ -588,6 +593,7 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        self._ui_probe.start()  # idempotent across repeated shows
         for tile in self._tiles:
             tile.start()
         # Restore the KEEP-recording state once if it was left on last session.
@@ -640,6 +646,7 @@ class MainWindow(QMainWindow):
         # Tell the watchdog this is a deliberate quit so it doesn't relaunch us.
         watchdog.mark_shutdown(self._settings.recording_dir)
         self._hb_timer.stop()
+        self._ui_probe.stop()
         self._refresh_clock.stop()
         self._keep_timer.stop()
         self._collision_timer.stop()

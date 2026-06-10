@@ -151,6 +151,9 @@ class TelegramNotifier(QObject):
         prio 1 = video upload (slow lane, never blocks a fast-lane alert)."""
         self._send_seq += 1
         self._send_q.put((prio, self._send_seq, task.run))
+        depth = self._send_q.qsize()
+        if depth >= 5:  # backpressure: sends are produced faster than drained
+            bus.warn("PERF", f"telegram send queue depth {depth}")
 
     def shutdown(self) -> None:
         """Stop the reply listener and the send worker; call from closeEvent."""

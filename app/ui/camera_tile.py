@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
+
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -472,6 +475,9 @@ class CameraTile(QFrame):
         self._fps = 0.0
         self._res = (0, 0)
         self._status = "connecting"
+        # Paint timestamps over a ~2s window: "shown" fps vs the worker's
+        # source fps. A big gap means the UI is dropping frames (PERF).
+        self._shown: deque[float] = deque()
 
         self._info = _InfoButton(self._info_text, header)
         self._info.setObjectName("TileInfo")
@@ -542,9 +548,16 @@ class CameraTile(QFrame):
     @Slot(QImage)
     def _on_frame(self, image: QImage) -> None:
         self._video.set_frame(image)
+        self._shown.append(time.monotonic())
         # Ack *after* accepting the frame: the worker drops (never queues)
         # frames while one is in flight, so a busy UI can't build a backlog.
         self._worker.ack_frame()
+
+    def _shown_fps(self) -> float:
+        now = time.monotonic()
+        while self._shown and now - self._shown[0] > 2.0:
+            self._shown.popleft()
+        return len(self._shown) / 2.0
 
     @Slot(QImage)
     def _on_tap(self, image: QImage) -> None:
@@ -667,13 +680,17 @@ class CameraTile(QFrame):
             f"Camera {self._camera.index} · {self._camera.label}\n"
             f"Stream: {self._current.upper()}\n"
             f"Resolution: {res}\n"
-            f"FPS: {self._fps:.1f}\n"
+            f"FPS: {self._fps:.1f} source · {self._shown_fps():.1f} shown\n"
             f"Status: {self._status}"
         )
 
     def _update_info(self) -> None:
-        # Warn-tint the badge if a supposedly-online stream is starved of frames.
-        slow = self._status == "online" and self._fps and self._fps < 5.0
+        # Warn-tint the badge when a supposedly-online stream is starved of
+        # frames, or when the UI shows far fewer frames than the source
+        # delivers (the drop-don't-queue mailbox is shedding load).
+        shown = self._shown_fps()
+        slow = self._status == "online" and bool(self._fps) and (
+            self._fps < 5.0 or shown < self._fps * 0.5)
         self._info.setProperty("slow", "true" if slow else "false")
         self._info.style().unpolish(self._info)
         self._info.style().polish(self._info)

@@ -392,7 +392,7 @@ class SegmentAnalyzer(QThread):
             f"cam{cam_id}: {path.name}  sampled {frames_sampled}f in {result.elapsed_s:.1f}s  "
             f"person {person_frames}f (max {max_persons})  "
             f"vehicle {vehicle_frames}f (max {max_vehicles})  "
-            f"events {events_extracted}",
+            f"events {events_extracted}  queue {self._queue.qsize()}",
         )
         self.segment_analyzed.emit(result)
         self.totals_changed.emit(self._person_segments, self._vehicle_segments)

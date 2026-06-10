@@ -254,6 +254,12 @@ class LiveDetector(QObject):
         self._encode_signals = _EncodeSignals()
         self._encode_signals.ready.connect(self._on_encoded)
         self._busy = False                      # one inference in flight at a time
+        # Inference latency, submit -> result (includes pool queue wait):
+        # rolling window reported on the PERF channel so CPU contention with
+        # the segment analyzer is visible instead of guessed at.
+        self._infer_t0 = 0.0
+        self._lat = [0, 0.0, 0.0]               # runs, sum_ms, max_ms
+        self._lat_reported = time.monotonic()
         self._last_alert: dict[int, float] = {}
         # Per-camera detect rectangle (normalized). A live detection only counts
         # if its box overlaps the camera's region; segment events are unaffected.
@@ -301,7 +307,26 @@ class LiveDetector(QObject):
         if self._busy:
             return
         self._busy = True
+        self._infer_t0 = time.monotonic()
         self._pool.start(_InferTask(self._detector, cam_id, frame, self._signals))
+
+    _LAT_REPORT_S = 60.0
+
+    def _note_latency(self, ms: float) -> None:
+        n, total, mx = self._lat
+        self._lat = [n + 1, total + ms, max(mx, ms)]
+        now = time.monotonic()
+        if now - self._lat_reported >= self._LAT_REPORT_S:
+            n, total, mx = self._lat
+            bus.info("PERF", f"live inference avg {total / max(1, n):.0f} ms, "
+                             f"max {mx:.0f} ms over {n} runs")
+            self._lat = [0, 0.0, 0.0]
+            self._lat_reported = now
+
+    def perf_snapshot(self) -> tuple:
+        """(runs, avg_ms, max_ms) of the current latency window."""
+        n, total, mx = self._lat
+        return n, (total / n if n else 0.0), mx
 
     # --- Pre-event ring buffer ---
 
@@ -340,6 +365,7 @@ class LiveDetector(QObject):
     @Slot(int, object, object)
     def _on_done(self, cam_id: int, frame, dets) -> None:
         self._busy = False
+        self._note_latency((time.monotonic() - self._infer_t0) * 1000.0)
         if not dets:
             return
         # Per-camera 'person' floor: drop low-confidence people on cameras with a

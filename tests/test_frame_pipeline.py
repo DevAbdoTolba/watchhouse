@@ -219,6 +219,10 @@ class LiveDetectorThreadingTests(unittest.TestCase):
             # Let the pooled inference task drain before tearing down.
             self.assertTrue(_spin_until(lambda: not det._busy, timeout_s=20.0),
                             "inference never completed")
+            # PERF surface: the latency window recorded the run.
+            self.assertTrue(_spin_until(lambda: det.perf_snapshot()[0] >= 1,
+                                        timeout_s=5.0),
+                            "inference latency not recorded")
         finally:
             thread.quit()
             self.assertTrue(thread.wait(5000))
@@ -271,6 +275,9 @@ class CameraTileChainTests(unittest.TestCase):
         self.assertIsNotNone(tile._video._image)
         self.assertLessEqual(tile._video._image.width(),
                              tile._video.width())  # pre-scaled in the worker
+        # PERF surface: the (!) tooltip reports shown fps next to source fps.
+        self.assertIn("shown", tile._info_text())
+        self.assertGreater(tile._shown_fps(), 0.0)
 
 
 class VideoPanelTests(unittest.TestCase):
