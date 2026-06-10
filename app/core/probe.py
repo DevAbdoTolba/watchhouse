@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import socket
 import time
-import uuid
 
 from PySide6.QtCore import QThread, Signal
 
@@ -29,8 +28,7 @@ class ProbeWorker(QThread):
             with socket.create_connection((s.dvr_ip, s.dvr_port), timeout=self.TCP_TIMEOUT_S) as sock:
                 elapsed = (time.monotonic() - t0) * 1000
                 bus.info("PROBE", f"TCP connect OK in {elapsed:.0f} ms")
-                # Speak RTSP DESCRIBE to see if anything answers
-                req_id = str(uuid.uuid4())[:8]
+                # Speak RTSP OPTIONS to see if anything answers
                 describe = (
                     f"OPTIONS rtsp://{s.dvr_ip}:{s.dvr_port}/ RTSP/1.0\r\n"
                     f"CSeq: 1\r\n"

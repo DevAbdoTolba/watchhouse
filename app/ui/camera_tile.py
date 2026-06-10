@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -64,18 +62,21 @@ class StatusDot(QWidget):
 class VideoPanel(QWidget):
     """Paints the current frame fit-to-bounds with letterboxing.
 
-    Falls back to a status message centered on a slightly-darker fill when
-    no frame is available (connecting, reconnecting, offline).
+    The decode workers pre-scale frames to this panel's size (announced via
+    `resized`), so painting is normally a plain blit. Falls back to a status
+    message centered on a slightly-darker fill when no frame is available
+    (connecting, reconnecting, offline).
     """
 
     region_changed = Signal()   # emitted when the user finishes dragging the box
+    resized = Signal(int, int)  # panel size; drives worker-side frame scaling
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumSize(160, 90)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._image: QImage | None = None
-        self._scaled: QImage | None = None  # cached fit-scale; rebuilt on frame/resize
+        self._scaled: QImage | None = None  # transient rescale; see paintEvent
         self._message: str | None = "Connecting"
         # Live-alert detect rectangle (normalized) + drag-editor state.
         self._region = list(dr.DEFAULT)
@@ -100,6 +101,7 @@ class VideoPanel(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt)
         self._scaled = None  # size changed -> the cached fit-scale is stale
+        self.resized.emit(self.width(), self.height())
         super().resizeEvent(event)
 
     def paintEvent(self, _event) -> None:  # noqa: N802 (Qt)
@@ -107,18 +109,23 @@ class VideoPanel(QWidget):
         painter.fillRect(self.rect(), QColor(theme.VIDEO_BG))
 
         if self._image is not None and not self._image.isNull():
-            # Scale once per frame/resize, not on every (also spontaneous)
-            # repaint — smooth-scaling 4 tiles per frame was needless UI load.
-            if self._scaled is None:
-                self._scaled = self._image.scaled(
-                    self.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            scaled = self._scaled
-            x = (self.width() - scaled.width()) // 2
-            y = (self.height() - scaled.height()) // 2
-            painter.drawImage(x, y, scaled)
+            # Frames normally arrive pre-scaled to this panel (the worker
+            # scales on its own thread), so this is a plain centered blit.
+            # Only a transient mismatch — a resize the worker hasn't caught
+            # up with — pays for a cheap one-off rescale here.
+            img = self._image
+            fit = img.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            if abs(fit.width() - img.width()) > 2 or abs(fit.height() - img.height()) > 2:
+                if self._scaled is None:
+                    self._scaled = img.scaled(
+                        self.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.FastTransformation,
+                    )
+                img = self._scaled
+            x = (self.width() - img.width()) // 2
+            y = (self.height() - img.height()) // 2
+            painter.drawImage(x, y, img)
             self._paint_region(painter)
             return
 
@@ -402,8 +409,8 @@ class CameraTile(QFrame):
     double_clicked = Signal(int, bool)
     # (camera index, raw_text) - emitted when the user renames inline.
     rename_committed = Signal(int, str)
-    # (camera index, QImage) - throttled live-frame tap (~2 fps) feeding the
-    # real-time alert tier. Emitted by _tap_frame.
+    # (camera index, QImage) - full-res live-frame tap (~2 fps, sampled in the
+    # stream worker) feeding the real-time alert tier.
     frame_tapped = Signal(int, QImage)
     # (camera index) - the live-alert detect rectangle was edited on this tile.
     detect_region_changed = Signal(int)
@@ -509,6 +516,7 @@ class CameraTile(QFrame):
         self._video = VideoPanel(self)
         self._video.region_changed.connect(
             lambda: self.detect_region_changed.emit(self._camera.index))
+        self._video.resized.connect(self._on_video_resized)
 
         outer.addWidget(header)
         outer.addWidget(self._video, 1)
@@ -525,20 +533,27 @@ class CameraTile(QFrame):
             label=f"CAM{self._camera.index}",
             parent=self,
         )
-        self._worker.frame_ready.connect(self._video.set_frame)
-        self._worker.frame_ready.connect(self._tap_frame)
+        self._worker.frame_ready.connect(self._on_frame)
+        self._worker.tap_ready.connect(self._on_tap)
         self._worker.status_changed.connect(self._on_status)
         self._worker.stats_changed.connect(self._on_stats)
-
-    _TAP_INTERVAL_S = 0.5  # re-emit a sample frame at most twice a second
+        self._worker.set_display_size(self._video.width(), self._video.height())
 
     @Slot(QImage)
-    def _tap_frame(self, image: QImage) -> None:
-        now = time.monotonic()
-        if now - getattr(self, "_last_tap", 0.0) < self._TAP_INTERVAL_S:
-            return
-        self._last_tap = now
+    def _on_frame(self, image: QImage) -> None:
+        self._video.set_frame(image)
+        # Ack *after* accepting the frame: the worker drops (never queues)
+        # frames while one is in flight, so a busy UI can't build a backlog.
+        self._worker.ack_frame()
+
+    @Slot(QImage)
+    def _on_tap(self, image: QImage) -> None:
         self.frame_tapped.emit(self._camera.index, image)
+
+    @Slot(int, int)
+    def _on_video_resized(self, w: int, h: int) -> None:
+        if self._worker is not None:
+            self._worker.set_display_size(w, h)
 
     # Public
 

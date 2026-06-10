@@ -3,9 +3,11 @@ toggleable bottom-docked admin log console."""
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
+from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtCore import Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
@@ -69,6 +71,7 @@ class MainWindow(QMainWindow):
         self._pins = Pins.load(settings.env_path)
         self._keep_timer = QTimer(self)
         self._keep_timer.timeout.connect(self._update_keep_counter)
+        self._kept_size_cache = (0.0, 0)  # (monotonic measured at, bytes)
         self._probe: ProbeWorker | None = None
         self._discovery: DiscoveryWorker | None = None
         self._pbprobe: PlaybackProbeWorker | None = None
@@ -127,6 +130,8 @@ class MainWindow(QMainWindow):
         # preview frames (separate from the delayed segment analyzer).
         # Quick clips go to recordings/live_clips (NOT events/), so the Events
         # gallery stays pure segment-tier. They're Telegram-only + reply-fetchable.
+        # Lives on its own QThread so frame conversion + the pre-roll JPEG
+        # buffering never run on the UI thread (tile taps arrive queued).
         self._live_detector = LiveDetector(
             settings.detection_model,
             set(self._armed_cameras),
@@ -141,8 +146,10 @@ class MainWindow(QMainWindow):
             person_conf=settings.detection_person_conf,
             min_box_frac=settings.detection_min_box_frac,
             person_conf_by_cam=self._person_floors,
-            parent=self,
         )
+        self._live_thread = QThread(self)
+        self._live_detector.moveToThread(self._live_thread)
+        self._live_thread.start()
         self._live_detector.live_alert.connect(self._on_live_alert)
         self._live_detector.quick_clip_ready.connect(self._on_quick_clip_ready)
         # Per-camera live-alert detect rectangles (drag on the tile).
@@ -267,10 +274,10 @@ class MainWindow(QMainWindow):
 
         system_menu = QMenu(self._system_btn)
         system_menu.setStyleSheet(
-            f"QMenu {{ background: #1f242e; border: 1px solid #2a3040; color: #ebe7e1; }}"
-            f"QMenu::item {{ padding: 6px 20px; }}"
-            f"QMenu::item:selected {{ background: #2a2017; color: #c69561; }}"
-            f"QMenu::separator {{ background: #2a3040; height: 1px; margin: 4px 0; }}"
+            "QMenu { background: #1f242e; border: 1px solid #2a3040; color: #ebe7e1; }"
+            "QMenu::item { padding: 6px 20px; }"
+            "QMenu::item:selected { background: #2a2017; color: #c69561; }"
+            "QMenu::separator { background: #2a3040; height: 1px; margin: 4px 0; }"
         )
         self._act_probe    = system_menu.addAction("Test DVR Connection")
         self._act_discover = system_menu.addAction("Discover DVR on LAN")
@@ -450,10 +457,10 @@ class MainWindow(QMainWindow):
             bus.info("APP", "switched to PLAYBACK mode")
 
     def _toggle_keep(self, on: bool) -> None:
-        from datetime import datetime
         if on:
             if self._pins.keep_from is None:
                 self._pins.set_keep_from(datetime.now())
+            self._kept_size_cache = (0.0, 0)  # force a fresh size measure
             self._keep_timer.start(1000)
             self._keep_btn.setText("❚❚")
         else:
@@ -483,7 +490,6 @@ class MainWindow(QMainWindow):
     def _update_keep_counter(self) -> None:
         if getattr(self, "_keep_status", None) is None:
             return
-        from datetime import datetime
         kf = self._pins.keep_from
         if kf is None:
             self._keep_status.setText("")
@@ -491,18 +497,19 @@ class MainWindow(QMainWindow):
         secs = max(0, int((datetime.now() - kf).total_seconds()))
         h, rem = divmod(secs, 3600)
         m, s = divmod(rem, 60)
-        mb = self._kept_size_bytes(kf.timestamp()) / 1024 / 1024
+        # Stat-walking every segment each second froze the UI; the byte count
+        # only needs to be fresh-ish, so re-measure at most every 10 s.
+        measured_at, size = self._kept_size_cache
+        now = time.monotonic()
+        if measured_at == 0.0 or now - measured_at >= 10.0:
+            size = self._kept_size_bytes(kf.timestamp())
+            self._kept_size_cache = (now, size)
+        mb = size / 1024 / 1024
         self._keep_status.setText(
             f"● {dvr_time.shift(kf):%H:%M:%S} · {h}:{m:02d}:{s:02d} · {mb:.0f} MB")
 
     def _effective_cam_name(self, cam) -> str:
-        """Custom name if set, else the camera's built-in location, else label."""
-        return (
-            self._camera_names.get(cam.index)
-            or getattr(cam, "location", None)
-            or getattr(cam, "label", None)
-            or f"camera {cam.index}"
-        )
+        return camera_names.display_name(cam, self._camera_names)
 
     def _build_grid(self, cameras, settings: Settings) -> tuple[QWidget, list[CameraTile]]:
         wrap = QWidget(self)
@@ -649,6 +656,9 @@ class MainWindow(QMainWindow):
             self._recorder.stop(wait_ms=5000)
         for tile in self._tiles:
             tile.shutdown(wait_ms=2000)
+        # Tiles are down (no more frame taps) -> the live tier can stop.
+        self._live_thread.quit()
+        self._live_thread.wait(2000)
         self._playback_view.shutdown()
         if self._notifier is not None:
             self._notifier.shutdown()  # stop the Telegram reply listener thread
@@ -857,5 +867,4 @@ class MainWindow(QMainWindow):
         )
 
     def _update_status_bar(self) -> None:
-        from datetime import datetime
         self._status_clock.setText(dvr_time.now().strftime("%Y-%m-%d  %H:%M:%S"))

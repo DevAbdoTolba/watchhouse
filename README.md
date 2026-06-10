@@ -4,7 +4,7 @@ A local AI surveillance platform for legacy DVRs. Native Windows desktop app
 that bridges 4 RTSP IP cameras hanging off a BitVision / Cantonk DVR and
 turns them into a smart event log. No cloud, no installer, no telemetry.
 
-Single self-contained `.exe`. Current release: **v0.4.68**.
+Single self-contained `.exe`. Current release: **v0.4.73**.
 
 ## What's shipped
 
@@ -59,8 +59,9 @@ flowchart LR
     DVR -->|RTSP/TCP| SW["StreamWorker ×4"]
     DVR -->|RTSP/TCP| REC["RecorderSupervisor<br/>+ RecorderWorker ×4"]
 
-    SW -->|frame_ready| TILE["CameraTile"]
-    TILE -->|frame_tapped| LIVE["LiveDetector"]
+    SW -->|"frame_ready (tile-sized, drop-don't-queue)"| TILE["CameraTile"]
+    SW -->|"tap_ready (full-res, ~2/s)"| TILE
+    TILE -->|frame_tapped| LIVE["LiveDetector<br/>(own QThread)"]
 
     subgraph live ["Live tier · instant"]
         LIVE --> D1["Detector (YOLOv8n)"]
@@ -100,6 +101,7 @@ classDiagram
     QObject <|-- RecorderSupervisor
     QObject <|-- TelegramNotifier
     QThread <|-- StreamWorker
+    QThread <|-- PlaybackPlayer
     QThread <|-- RecorderWorker
     QThread <|-- SegmentAnalyzer
     QThread <|-- TelegramPoller
@@ -107,9 +109,19 @@ classDiagram
     class MainWindow {
         composition root
     }
+    class StreamWorker {
+        +frame_ready(QImage) signal tile-sized
+        +tap_ready(QImage) signal full-res
+        drop-dont-queue mailbox, scales on own thread
+    }
+    class PlaybackPlayer {
+        +frame_ready(QImage) signal tile-sized
+        deadline pacing, same mailbox
+    }
     class RecorderSupervisor {
         +segment_closed(str) signal
         +stats_changed(int,int,int) signal
+        prune and stats walks on the thread pool
     }
     class RecorderWorker {
         +status_changed(str) signal
@@ -123,6 +135,7 @@ classDiagram
     class LiveDetector {
         +live_alert(int,str,str) signal
         +quick_clip_ready(int,str) signal
+        lives on its own QThread
     }
     class Detector {
         ONNX YOLOv8n inference
@@ -270,7 +283,8 @@ classDiagram
 > Legend: `<|--` inheritance · `*--` composition (owns/creates) · `o--` aggregation
 > (holds a reference) · `..>` dependency (produces / consumes). A handful of helpers
 > are intentionally module-level functions rather than classes — `dvr_time` (display
-> offset), `detlog` (detection log), and the `log` bus singleton.
+> offset), `detlog` (detection log), `frames` (worker-side frame scaling), and the
+> `log` bus singleton.
 
 ## Run from source
 

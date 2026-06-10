@@ -12,7 +12,7 @@ freezes; results return to the GUI thread via a queued signal.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,

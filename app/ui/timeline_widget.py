@@ -15,7 +15,6 @@ from datetime import date as _date, datetime, time as _time, timedelta
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
-    QBrush,
     QColor,
     QFont,
     QFontMetrics,

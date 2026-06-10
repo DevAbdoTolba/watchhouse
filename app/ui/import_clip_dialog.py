@@ -13,10 +13,10 @@ now, the human enters it.
 from __future__ import annotations
 
 import shutil
-from datetime import date as _date, datetime, time as _time
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QTime, Qt
+from PySide6.QtCore import QDate, QTime
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTimeEdit,
     QVBoxLayout,
-    QWidget,
 )
 
 from app.core.cameras import Camera

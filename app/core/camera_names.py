@@ -31,6 +31,18 @@ def clean_name(value: str) -> str:
     return " ".join(value.split())[:MAX_NAME_LEN].strip()
 
 
+def display_name(camera, names: dict[int, str]) -> str:
+    """The one fallback chain for a camera's human label, shared by the tile
+    headers, the playback view, and the Telegram captions: custom name if
+    set, else the camera's built-in location, else its label."""
+    return (
+        names.get(camera.index)
+        or getattr(camera, "location", None)
+        or getattr(camera, "label", None)
+        or f"camera {camera.index}"
+    )
+
+
 def load(anchor: Path | None) -> dict[int, str]:
     """Return {camera_index: name}; missing/corrupt file -> {}."""
     path = _names_path(anchor)

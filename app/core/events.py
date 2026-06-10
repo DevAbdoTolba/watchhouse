@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 
-    from app.core.detect import Detection
 
 from app.core.log import bus
 
@@ -570,7 +569,6 @@ def write_event_chain(
     # Outer-edge margins, clamped to real footage on each end.
     head_start = max(0.0, first.ev.t_start - cfg.pre_roll_s)
     activity_wall = first.seg_start + timedelta(seconds=first.ev.t_start)
-    window_start = first.seg_start + timedelta(seconds=head_start)
     last_raw_end = last.ev.t_end + cfg.post_roll_s
     last_reaches_eof = last.duration_s > 0 and last_raw_end >= last.duration_s - 1.0
     last_end = min(last.duration_s, last_raw_end) if last.duration_s > 0 else last_raw_end

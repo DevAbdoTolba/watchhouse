@@ -208,7 +208,12 @@ class _EncodeTask(QRunnable):
 
 
 class LiveDetector(QObject):
-    """Real-time person/vehicle alerts + instant quick-clip off live frames."""
+    """Real-time person/vehicle alerts + instant quick-clip off live frames.
+
+    MainWindow moves this object to its own QThread: `submit` (frame
+    conversion + the pre-roll JPEG buffering) arrives as a queued slot call,
+    so none of that per-frame work ever runs on the UI thread. Inference and
+    clip encoding fan further out to the global QThreadPool."""
 
     live_alert = Signal(int, str, str)      # cam_id, title, thumb_path
     quick_clip_ready = Signal(int, str)     # cam_id, event_folder

@@ -1,9 +1,14 @@
 """Single-clip playback worker.
 
-One QThread per playback tile. Decodes an MP4 file with cv2 and emits
-each frame as a QImage. Supports pause, play, seek (millisecond precision
-via CAP_PROP_POS_MSEC), and speed multiplier. The thread loops forever
-once started; the supervisor swaps clips by calling `load(...)`.
+One QThread per playback tile. Decodes an MP4 file with cv2, scales each
+frame to the tile's size on this thread, and emits it as a QImage. Supports
+pause, play, seek (millisecond precision via CAP_PROP_POS_MSEC), and speed
+multiplier. The thread loops forever once started; the supervisor swaps
+clips by calling `load(...)`.
+
+Pacing is deadline-based (decode time is subtracted from the sleep) so
+playback holds real-time speed, and frames are dropped — never queued —
+when the UI hasn't consumed the previous one (see `ack_frame`).
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ import cv2
 from PySide6.QtCore import QMutex, QMutexLocker, QThread, Signal
 from PySide6.QtGui import QImage
 
+from app.core.frames import fit_to, to_qimage
 from app.core.log import bus
 
 # How long (s) a sampled box set stays drawn until the next sample. Detection
@@ -66,8 +72,21 @@ class PlaybackPlayer(QThread):
         # the Events view to draw bounding boxes as a recorded event plays.
         self._overlay_track: list | None = None
         self._overlay_on = False
+        # Written from the UI thread, read here; GIL-atomic, no mutex needed.
+        self._display_w = 0
+        self._display_h = 0
+        self._frame_in_flight = False
 
     # Public API (call from GUI thread)
+
+    def set_display_size(self, w: int, h: int) -> None:
+        """Tile size for worker-side frame scaling (see app.core.frames)."""
+        self._display_w = max(0, int(w))
+        self._display_h = max(0, int(h))
+
+    def ack_frame(self) -> None:
+        """The UI consumed the last emitted frame; allow the next one."""
+        self._frame_in_flight = False
 
     def load(self, clip_path: Path | None, start_offset_s: float = 0.0) -> None:
         with QMutexLocker(self._mutex):
@@ -115,7 +134,8 @@ class PlaybackPlayer(QThread):
         bus.info(self._label, "playback player started")
         cap: cv2.VideoCapture | None = None
         frame_interval_ms = 1000.0 / self.DEFAULT_FPS
-        last_emit_t = time.monotonic()
+        last_pos_t = time.monotonic()
+        next_due = time.monotonic()  # deadline of the next frame emit
 
         while True:
             with QMutexLocker(self._mutex):
@@ -159,7 +179,8 @@ class PlaybackPlayer(QThread):
                 if seek_ms and seek_ms > 0:
                     cap.set(cv2.CAP_PROP_POS_MSEC, seek_ms)
                 self.state_changed.emit("playing" if not paused else "paused")
-                last_emit_t = time.monotonic()
+                last_pos_t = time.monotonic()
+                next_due = time.monotonic()
                 continue
 
             if cap is None:
@@ -168,8 +189,10 @@ class PlaybackPlayer(QThread):
 
             if seek_ms is not None:
                 cap.set(cv2.CAP_PROP_POS_MSEC, seek_ms)
+                next_due = time.monotonic()
 
             if paused:
+                next_due = time.monotonic()
                 self.msleep(40)
                 continue
 
@@ -183,17 +206,25 @@ class PlaybackPlayer(QThread):
 
             pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
             if overlay_on and track:
+                # Boxes are in original pixel coords; draw before scaling.
                 _draw_overlay(frame, track, pos_ms / 1000.0)
-            h, w = frame.shape[:2]
-            stride = frame.strides[0]
-            qimg = QImage(frame.data, w, h, stride, QImage.Format.Format_BGR888).copy()
-            self.frame_ready.emit(qimg)
-            if now - last_emit_t >= 0.25:
+            if not self._frame_in_flight:
+                self._frame_in_flight = True
+                self.frame_ready.emit(
+                    to_qimage(fit_to(frame, self._display_w, self._display_h)))
+            if now - last_pos_t >= 0.25:
                 self.position_changed.emit(pos_ms / 1000.0)
-                last_emit_t = now
+                last_pos_t = now
 
-            target_interval_ms = max(5.0, frame_interval_ms / max(0.1, speed))
-            self.msleep(int(target_interval_ms))
+            # Deadline pacing: sleep only the remainder after decode/scale, so
+            # actual playback speed matches the requested one. If we fell far
+            # behind (slow open, debugger pause), resnap instead of bursting.
+            next_due += max(0.005, (frame_interval_ms / 1000.0) / max(0.1, speed))
+            now = time.monotonic()
+            if next_due < now - 0.25:
+                next_due = now
+            if next_due > now:
+                self.msleep(int((next_due - now) * 1000))
 
         if cap is not None:
             cap.release()

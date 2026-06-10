@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from app.core.camera_links import EDGES, Link

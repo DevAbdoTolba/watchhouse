@@ -22,7 +22,6 @@ exponential backoff and respawns.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -30,7 +29,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QRunnable, QThread, QThreadPool, QTimer, Signal
 
 from app.core.cameras import Camera
 from app.core.config import Settings
@@ -195,10 +194,28 @@ class RecorderWorker(QThread):
             self.msleep(100)
 
 
+class _FsTask(QRunnable):
+    """Run a filesystem-walking callable on the global pool. The retention
+    prune and the stats count both rglob the whole recordings tree — far too
+    slow for the UI thread on a spinning disk."""
+
+    def __init__(self, fn) -> None:
+        super().__init__()
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            self._fn()
+        except Exception as e:  # never let a scan kill the pool thread
+            bus.warn("REC", f"background scan failed: {e!s}")
+
+
 class RecorderSupervisor(QObject):
     """Owns N RecorderWorker instances + a retention pruner.
 
     Counts segments and bytes on disk for surfacing into the UI status bar.
+    Both disk walks run on the global thread pool; only their timers and the
+    resulting Qt signals touch the UI thread.
     """
 
     stats_changed = Signal(int, int, int)  # segments_count, bytes_total, active_workers
@@ -220,6 +237,10 @@ class RecorderSupervisor(QObject):
         # only prints its "Opening '...'" segment line at -loglevel verbose,
         # not at the warning level we run it at.
         self._last_segment: dict[int, str] = {}
+        # Reentry guards for the pooled disk walks (set on the UI thread,
+        # cleared by the pool thread; GIL-atomic).
+        self._prune_busy = False
+        self._stats_busy = False
         self._prune_timer = QTimer(self)
         self._prune_timer.timeout.connect(self._prune_old_segments)
         self._stats_timer = QTimer(self)
@@ -323,6 +344,19 @@ class RecorderSupervisor(QObject):
         return any(root in parents for root in protected)
 
     def _prune_old_segments(self, startup: bool = False) -> None:
+        if self._prune_busy:
+            return
+        self._prune_busy = True
+        QThreadPool.globalInstance().start(
+            _FsTask(lambda: self._prune_blocking(startup)))
+
+    def _prune_blocking(self, startup: bool) -> None:
+        try:
+            self._do_prune(startup)
+        finally:
+            self._prune_busy = False
+
+    def _do_prune(self, startup: bool) -> None:
         base = self._settings.recording_dir
         if not base.is_dir():
             return
@@ -367,21 +401,33 @@ class RecorderSupervisor(QObject):
             bus.info("REC", "startup sweep: no stale segments to prune")
 
     def _refresh_stats(self) -> None:
-        base = self._settings.recording_dir
-        segs = 0
-        total = 0
-        if base.is_dir():
-            protected = self._protected_roots()
-            for f in base.rglob("*.mp4"):
-                if self._is_protected(f, protected):
-                    continue
-                try:
-                    total += f.stat().st_size
-                    segs += 1
-                except OSError:
-                    continue
+        if self._stats_busy:
+            return
+        self._stats_busy = True
+        # Snapshot the worker count here — self._workers belongs to the UI
+        # thread and stop() clears it.
         active = sum(1 for w in self._workers if w.isRunning())
-        self.stats_changed.emit(segs, total, active)
+        QThreadPool.globalInstance().start(
+            _FsTask(lambda: self._refresh_stats_blocking(active)))
+
+    def _refresh_stats_blocking(self, active: int) -> None:
+        try:
+            base = self._settings.recording_dir
+            segs = 0
+            total = 0
+            if base.is_dir():
+                protected = self._protected_roots()
+                for f in base.rglob("*.mp4"):
+                    if self._is_protected(f, protected):
+                        continue
+                    try:
+                        total += f.stat().st_size
+                        segs += 1
+                    except OSError:
+                        continue
+            self.stats_changed.emit(segs, total, active)
+        finally:
+            self._stats_busy = False
 
     @staticmethod
     def disk_free_bytes(path: Path) -> int:

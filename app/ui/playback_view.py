@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date as _date, datetime, time as _time, timedelta
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
+    QImage,
     QTextCharFormat,
 )
 from PySide6.QtCore import QUrl
@@ -150,8 +152,10 @@ class PlaybackTile(QFrame):
         outer.addWidget(self._video, 1)
 
         self._player = PlaybackPlayer(label=f"PB{camera.index}", parent=self)
-        self._player.frame_ready.connect(self._video.set_frame)
+        self._player.frame_ready.connect(self._on_frame)
         self._player.state_changed.connect(self._on_state)
+        self._video.resized.connect(self._player.set_display_size)
+        self._player.set_display_size(self._video.width(), self._video.height())
         self._player.start()
 
         # At the live edge the next 3-min segment isn't finalized yet (no moov
@@ -163,6 +167,13 @@ class PlaybackTile(QFrame):
     def shutdown(self, wait_ms: int = 2000) -> None:
         self._player.request_stop()
         self._player.wait(wait_ms)
+
+    @Slot(QImage)
+    def _on_frame(self, image: QImage) -> None:
+        self._video.set_frame(image)
+        # Ack so the player emits the next frame; it drops frames (never
+        # queues) while one is in flight — see PlaybackPlayer.ack_frame.
+        self._player.ack_frame()
 
     def set_day_clips(self, clips: list[Clip]) -> None:
         """Refresh this camera's clip list (the view re-pushes it as new tail
@@ -334,6 +345,7 @@ class PlaybackView(QWidget):
         self._cameras = cameras
         self._settings = settings
         self._library: dict[int, list[Clip]] = {}
+        self._last_lib_scan = 0.0  # throttles live-edge rescans
         # Permanent ('pinned', blue) footage: imported clips, user-pinned ranges,
         # and a live "keep new recording" window. The pruner reads the same file.
         self._pins = Pins.load(settings.env_path)
@@ -606,7 +618,7 @@ class PlaybackView(QWidget):
         return side
 
     def _cam_display_name(self, cam: Camera, names: dict[int, str]) -> str:
-        return names.get(cam.index) or cam.location or cam.label
+        return camera_names.display_name(cam, names)
 
     def _cam_name_map(self) -> dict[int, str]:
         """trigger_cam -> display name, for the events model's row labels."""
@@ -1115,7 +1127,12 @@ class PlaybackView(QWidget):
         self._apply_event_filters()
 
     def _periodic_refresh(self) -> None:
-        self.refresh_library()  # keep recordings/timeline current regardless
+        # The library scan walks the whole recordings tree on the UI thread;
+        # don't pay for it while the playback view is hidden (live mode).
+        # Switching to PLAYBACK triggers refresh_library() anyway.
+        if not self.isVisible():
+            return
+        self.refresh_library()
         if self._mode == "events":
             self.refresh_events()
 
@@ -1274,6 +1291,7 @@ class PlaybackView(QWidget):
     # --- Library / day ---
 
     def refresh_library(self) -> None:
+        self._last_lib_scan = time.monotonic()
         self._library = scan(self._settings.recording_dir)
         self._timeline.set_segments(self._library)
         # Keep each tile's clip list current so auto-advance can roll into newly
@@ -1476,7 +1494,11 @@ class PlaybackView(QWidget):
     @Slot(int)
     def _on_tile_tail_waiting(self, cam_id: int) -> None:
         # A tile hit the live edge; rescan so a just-finalized next segment is
-        # on the lists, then the tile's retry tick rolls into it.
+        # on the lists, then the tile's retry tick rolls into it. All four
+        # tiles retry every 2s when parked at the edge — one scan per few
+        # seconds is plenty for a 3-minute segment roll.
+        if time.monotonic() - self._last_lib_scan < 5.0:
+            return
         self.refresh_library()
 
     def _reset_scrub(self) -> None:

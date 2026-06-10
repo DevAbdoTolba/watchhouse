@@ -101,9 +101,6 @@ class Detector:
                 return False, f"box<{self._min_box_frac:g}"
         return True, ""
 
-    def _passes_filters(self, d: "Detection", w: float, h: float) -> bool:
-        return self._verdict(d, w, h)[0]
-
     @property
     def available(self) -> bool:
         return self._model_path.is_file()

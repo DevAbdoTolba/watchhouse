@@ -1,8 +1,19 @@
 """RTSP stream worker. One QThread per camera tile.
 
 Decodes frames with OpenCV (FFmpeg backend, TCP transport via the env flags
-set in app/__init__.py), emits each decoded frame as a QImage to the UI,
-and reconnects with exponential backoff on failure.
+set in app/__init__.py), scales each frame to the tile's size on this thread,
+emits it as a QImage to the UI, and reconnects with exponential backoff on
+failure.
+
+Two rules keep the live view honest:
+
+- The read loop never sleeps: `cap.read()` blocks until the camera delivers
+  the next frame, so the source paces us. Any extra sleep makes us consume
+  slower than the camera produces, FFmpeg's buffer backs up, and the picture
+  drifts seconds behind live.
+- Frames are dropped, never queued: a frame is only emitted after the UI
+  acknowledged the previous one (`ack_frame`). A busy UI gets fewer frames,
+  not a growing backlog of stale ones.
 """
 
 from __future__ import annotations
@@ -13,18 +24,20 @@ import cv2
 from PySide6.QtCore import QMutex, QMutexLocker, QThread, Signal
 from PySide6.QtGui import QImage
 
+from app.core.frames import fit_to, to_qimage
 from app.core.log import bus, mask_url
 
 
 class StreamWorker(QThread):
-    frame_ready = Signal(QImage)
+    frame_ready = Signal(QImage)  # scaled to the display size on this thread
+    tap_ready = Signal(QImage)    # full-res sample for the live-alert tier
     status_changed = Signal(str)  # "connecting" | "online" | "reconnecting" | "stopped"
     stats_changed = Signal(float, int, int)  # measured fps, width, height
 
     INITIAL_BACKOFF_S = 1.0
     MAX_BACKOFF_S = 30.0
     READ_TIMEOUT_S = 5.0
-    TARGET_INTERVAL_MS = 33  # ~30 FPS upper bound; the source rate caps below this
+    TAP_INTERVAL_S = 0.5  # full-res sample rate feeding the live detector
 
     def __init__(self, url: str, label: str = "STRM", parent=None) -> None:
         super().__init__(parent)
@@ -33,6 +46,21 @@ class StreamWorker(QThread):
         self._stop = False
         self._reopen = False
         self._label = label
+        # Plain ints/bools written from the UI thread, read here; assignment
+        # is atomic under the GIL so no mutex is needed.
+        self._display_w = 0
+        self._display_h = 0
+        self._frame_in_flight = False
+
+    def set_display_size(self, w: int, h: int) -> None:
+        """Tell the worker the tile's current size so frames are scaled here,
+        off the UI thread. Called from the UI on resize."""
+        self._display_w = max(0, int(w))
+        self._display_h = max(0, int(h))
+
+    def ack_frame(self) -> None:
+        """The UI consumed the last emitted frame; allow the next one."""
+        self._frame_in_flight = False
 
     def set_url(self, url: str) -> None:
         with QMutexLocker(self._mutex):
@@ -63,7 +91,6 @@ class StreamWorker(QThread):
     def run(self) -> None:
         bus.info(self._label, f"worker started for {mask_url(self._url)}")
         backoff = self.INITIAL_BACKOFF_S
-        first_frame_seen = False
         while True:
             with QMutexLocker(self._mutex):
                 if self._stop:
@@ -99,6 +126,7 @@ class StreamWorker(QThread):
 
             last_frame_at = time.monotonic()
             first_frame_seen = False
+            last_tap = 0.0
             stat_count = 0
             stat_t0 = time.monotonic()
             while True:
@@ -120,16 +148,23 @@ class StreamWorker(QThread):
                     continue
 
                 last_frame_at = now
+                h, w = frame.shape[:2]
                 if not first_frame_seen:
                     first_frame_seen = True
-                    h0, w0 = frame.shape[:2]
-                    bus.info(self._label, f"first frame {w0}x{h0}")
-                h, w = frame.shape[:2]
-                stride = frame.strides[0]
-                qimg = QImage(frame.data, w, h, stride, QImage.Format.Format_BGR888).copy()
-                self.frame_ready.emit(qimg)
+                    bus.info(self._label, f"first frame {w}x{h}")
 
-                # Measured display FPS over ~1s windows - the live "is HQ
+                if not self._frame_in_flight:
+                    self._frame_in_flight = True
+                    self.frame_ready.emit(
+                        to_qimage(fit_to(frame, self._display_w, self._display_h)))
+
+                # Full-res sample for the live-alert tier, ~2/s. Display frames
+                # are tile-sized, so the detector gets its own undegraded tap.
+                if now - last_tap >= self.TAP_INTERVAL_S:
+                    last_tap = now
+                    self.tap_ready.emit(to_qimage(frame))
+
+                # Measured source FPS over ~1s windows - the live "is HQ
                 # keeping up?" signal surfaced in the tile's (!) badge.
                 stat_count += 1
                 dt = now - stat_t0
@@ -137,8 +172,6 @@ class StreamWorker(QThread):
                     self.stats_changed.emit(stat_count / dt, w, h)
                     stat_count = 0
                     stat_t0 = now
-
-                self.msleep(self.TARGET_INTERVAL_MS)
 
             cap.release()
 

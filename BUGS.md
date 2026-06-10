@@ -11,6 +11,40 @@ Each entry: symptom → status → suspected cause(s) → next step. Suspicions 
 
 ## Open
 
+### BUG-012 — Whole app laggy (live view stutters, drifts behind real time)
+- **Symptom (06/10):** the application is sluggish across the board; the live
+  grid stutters and the picture falls further behind real time the longer the
+  app runs.
+- **Status:** FIXED (v0.4.73). Verified through the REAL signal chain offscreen
+  (15/15 checks: mailbox bound, pre-scaled frames, full-res tap, real-time
+  pacing, detector thread affinity, full CameraTile chain).
+- **Causes (all UI-thread starvation or decoder backpressure):**
+  1. `StreamWorker` slept 33 ms after every `cap.read()`. A live RTSP read
+     blocks until the next frame, so the sleep made us consume *slower than
+     the camera produces* — FFmpeg's buffer backed up and latency grew
+     without bound (with periodic catch-up bursts).
+  2. Every decoded frame was emitted to the UI as a queued full-res QImage
+     with no bound: whenever the UI stalled, stale frames piled up in the
+     event queue (more latency + RAM).
+  3. The UI thread smooth-scaled every full-res frame for every tile
+     (4 tiles × up to 25 fps) — the single biggest UI-thread CPU sink.
+  4. More UI-thread work: the live-detector tap (BGR convert + resize + JPEG
+     encode, 8×/s), the KEEP counter stat-walking every segment every second,
+     the playback view rescanning the whole recordings tree every 30 s even
+     in LIVE mode (and every 2 s while parked at the live edge), and the
+     recorder's stats/prune rglob walks (every 10 s / 5 min).
+  5. `PlaybackPlayer` slept a full frame interval *after* decoding, so decode
+     time was added on top — playback ran slower than real time.
+- **Fix (v0.4.73):** the stream/playback workers scale frames to the tile size
+  on their own threads (`app/core/frames.py`) and emit drop-don't-queue (an
+  ack mailbox bounds in-flight frames to ONE; a busy UI gets fewer frames,
+  never a backlog); the read loop never sleeps; a separate full-res tap
+  (~2/s) feeds the LiveDetector, which now lives on its own QThread; the KEEP
+  byte-count is cached for 10 s; the playback periodic scan is gated on
+  visibility and live-edge rescans are throttled; recorder prune/stats walks
+  moved to the thread pool; playback pacing is deadline-based (decode time
+  subtracted from the sleep).
+
 ### BUG-011 — Recordings playback laggy / stuttery / "sometimes never plays"
 - **Symptom (06/08):** local recorded video plays back jerky, drifts, and at
   times won't play at all — "it's just local files, why lag?"
