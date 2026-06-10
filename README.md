@@ -4,7 +4,7 @@ A local AI surveillance platform for legacy DVRs. Native Windows desktop app
 that bridges 4 RTSP IP cameras hanging off a BitVision / Cantonk DVR and
 turns them into a smart event log. No cloud, no installer, no telemetry.
 
-Single self-contained `.exe`. Current release: **v0.4.75**.
+Single self-contained `.exe`. Current release: **v0.4.76**.
 
 ## What's shipped
 
@@ -42,10 +42,12 @@ Single self-contained `.exe`. Current release: **v0.4.75**.
 ## Architecture
 
 Watchhouse is an object-oriented PySide6 (Qt6) app. Every long-running job is a
-`QThread` or pooled `QRunnable`; the UI thread never blocks on I/O. `MainWindow`
-is the composition root that owns the backend pipeline; immutable `@dataclass`
-records (`Settings`, `Camera`, `EventClip`, `Detection`, …) carry data between
-tiers. The diagrams below are generated from the actual classes in `app/`.
+`QThread` or pooled `QRunnable`; the UI thread never blocks on I/O. `Pipeline`
+is the backend composition root (recorder → analyzer → events → collision →
+Telegram + the live alert tier), drivable headless; `MainWindow` is pure
+presentation over its signals. Immutable `@dataclass` records (`Settings`,
+`Camera`, `EventClip`, `Detection`, …) carry data between tiers. The diagrams
+below are generated from the actual classes in `app/`.
 
 ### Runtime data flow
 
@@ -72,14 +74,15 @@ flowchart LR
         AN --> STITCH["EventStitcher"]
     end
 
-    REC -->|segment_closed| MW["MainWindow"]
-    MW --> AN
-    LIVE -->|live_alert / quick_clip_ready| MW
-    AN -->|event_extracted : EventClip| MW
+    REC -->|segment_closed| PL["Pipeline<br/>(backend seam)"]
+    PL --> AN
+    LIVE -->|live_alert / quick_clip_ready| PL
+    AN -->|event_extracted : EventClip| PL
+    PL -->|event_extracted| MW["MainWindow"]
 
-    MW --> COL["CollisionMatcher"]
+    PL --> COL["CollisionMatcher"]
     COL -->|single / fused collision| NOTIF["TelegramNotifier"]
-    MW -->|notify_live| NOTIF
+    PL -->|notify_live| NOTIF
 
     NOTIF --> TG((Telegram))
     NOTIF -. owns .-> POLL["TelegramPoller"]
@@ -97,6 +100,7 @@ classDiagram
     class QRunnable
 
     QMainWindow <|-- MainWindow
+    QObject <|-- Pipeline
     QObject <|-- LiveDetector
     QObject <|-- RecorderSupervisor
     QObject <|-- TelegramNotifier
@@ -108,7 +112,13 @@ classDiagram
     QThread <|-- TelegramPoller
 
     class MainWindow {
-        composition root
+        pure presentation over Pipeline signals
+    }
+    class Pipeline {
+        backend composition root, headless-drivable
+        +recorder_stats(int,int,int) signal
+        +ai_totals(int,int) signal
+        +event_extracted(EventClip) signal
     }
     class StreamWorker {
         +frame_ready(QImage) signal tile-sized
@@ -162,11 +172,12 @@ classDiagram
     }
 
     MainWindow *-- UiLoopProbe
-    MainWindow *-- RecorderSupervisor
-    MainWindow *-- SegmentAnalyzer
-    MainWindow *-- LiveDetector
-    MainWindow *-- CollisionMatcher
-    MainWindow *-- TelegramNotifier
+    MainWindow *-- Pipeline
+    Pipeline *-- RecorderSupervisor
+    Pipeline *-- SegmentAnalyzer
+    Pipeline *-- LiveDetector
+    Pipeline *-- CollisionMatcher
+    Pipeline *-- TelegramNotifier
     RecorderSupervisor *-- "N" RecorderWorker
     SegmentAnalyzer *-- Detector
     SegmentAnalyzer *-- EventStitcher

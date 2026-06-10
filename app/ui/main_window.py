@@ -7,7 +7,7 @@ import time
 from dataclasses import replace
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QThread, QTimer, Slot
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
@@ -29,23 +29,18 @@ from app.core.config import Settings, persist_dvr_ip, persist_env_values, with_d
 from app.core.discovery import DiscoveryResult, DiscoveryWorker
 from app.core.ip_cache import load as load_ip_cache, record_hit as record_ip_hit
 from app.core.log import bus
+from app.core.perf import UiLoopProbe
+from app.core.pipeline import Pipeline
+from app.core.pins import Pins
 from app.core.playback_probe import PlaybackProbeWorker
 from app.core.probe import ProbeWorker
 from app.core import camera_names
-from app.core.analyzer import SegmentAnalyzer
-from app.core.events import EventConfig
-from app.core.perf import UiLoopProbe
-from app.core.notifier import TelegramNotifier
-from app.core.live_detector import LiveDetector
-from app.core.recorder import RecorderSupervisor
-from app.core.pins import Pins
 from app.core import detect_regions as dr
 from app.core import detlog
 from app.core import dvr_time
 from app.core import camera_links
 from app.core import detection_prefs
 from app.core import watchdog
-from app.core.collision import CollisionMatcher
 from app.ui.camera_names_dialog import CameraNamesDialog
 from app.ui.camera_links_dialog import CameraLinksDialog
 from app.ui.detection_settings_dialog import DetectionSettingsDialog
@@ -76,8 +71,6 @@ class MainWindow(QMainWindow):
         self._probe: ProbeWorker | None = None
         self._discovery: DiscoveryWorker | None = None
         self._pbprobe: PlaybackProbeWorker | None = None
-        self._recorder: RecorderSupervisor | None = None
-        self._analyzer: SegmentAnalyzer | None = None
         self.setWindowTitle("Watchhouse")
         self.setMinimumSize(880, 560)
         self._size_to_screen()
@@ -95,28 +88,6 @@ class MainWindow(QMainWindow):
         self._cam_labels: dict[int, str] = {
             c.index: self._effective_cam_name(c) for c in self._cameras
         }
-        # Quick clips live here (NOT events/), so the gallery stays pure.
-        self._live_clips_dir = settings.recording_dir / "live_clips"
-        # Off-device push alerts; no-op unless TELEGRAM_* is configured in .env.
-        self._notifier = TelegramNotifier(
-            settings.telegram_bot_token,
-            settings.telegram_chat_id,
-            min_interval_s=settings.telegram_min_interval_s,
-            notify_ongoing=settings.event_notify_ongoing,
-            commands_enabled=settings.telegram_commands,
-            state_dir=settings.env_path,
-            events_dir=settings.events_dir,
-            recording_dir=settings.recording_dir,
-            cam_ids=[c.index for c in self._cameras],
-            pre_roll_s=settings.live_pre_roll_s,
-            post_roll_s=settings.live_post_roll_s,
-            map_cap=settings.telegram_map_cap,
-            live_clips_dir=self._live_clips_dir,
-            lang=settings.telegram_lang,
-            parent=self,
-        )
-        self._notifier.set_cam_labels(self._cam_labels)
-
         # Per-camera person-confidence floors: the .env baseline overlaid with the
         # user's saved UI edits (.cctv-detection.json). A cam absent here is
         # uncapped (keeps every person the model reports); a noisy view (door cam)
@@ -126,49 +97,23 @@ class MainWindow(QMainWindow):
             **settings.detection_person_conf_by_cam,
             **detection_prefs.load(settings.env_path),
         }
-
-        # Real-time alert tier: instant person/vehicle alerts off the live
-        # preview frames (separate from the delayed segment analyzer).
-        # Quick clips go to recordings/live_clips (NOT events/), so the Events
-        # gallery stays pure segment-tier. They're Telegram-only + reply-fetchable.
-        # Lives on its own QThread so frame conversion + the pre-roll JPEG
-        # buffering never run on the UI thread (tile taps arrive queued).
-        self._live_detector = LiveDetector(
-            settings.detection_model,
-            set(self._armed_cameras),
-            conf=settings.live_conf,
-            cooldown_s=settings.live_cooldown_s,
-            clips_dir=self._live_clips_dir,
-            quick_clip_enabled=settings.live_quick_clip,
-            pre_roll_s=settings.live_pre_roll_s,
-            post_roll_s=settings.live_post_roll_s,
-            max_clip_s=settings.live_max_clip_s,
-            clip_retention=settings.telegram_map_cap,
-            person_conf=settings.detection_person_conf,
-            min_box_frac=settings.detection_min_box_frac,
-            person_conf_by_cam=self._person_floors,
-        )
-        self._live_thread = QThread(self)
-        self._live_detector.moveToThread(self._live_thread)
-        self._live_thread.start()
-        self._live_detector.live_alert.connect(self._on_live_alert)
-        self._live_detector.quick_clip_ready.connect(self._on_quick_clip_ready)
         # Per-camera live-alert detect rectangles (drag on the tile).
         self._detect_regions = dr.load(settings.env_path)
-        self._live_detector.set_regions(self._detect_regions)
-
-        # Same-movement cross-camera fusion: one crossing = one event. The
-        # matcher buffers freshly extracted events and fuses pairs that match a
-        # taught camera link, else releases them to the normal notify path.
         self._camera_links = camera_links.load(settings.env_path)
-        self._collision = CollisionMatcher(
-            self._camera_links,
-            on_collision=self._on_collision,
-            on_single=self._notify_single,
+
+        # The whole backend (recorder -> analyzer -> events -> collision ->
+        # Telegram + the live alert tier) lives behind one seam; this window
+        # only renders its signals and forwards the user's preference edits.
+        self._pipeline = Pipeline(
+            settings, self._cameras, self._armed_cameras,
+            self._person_floors, self._detect_regions,
+            self._camera_links, self._cam_labels, parent=self,
         )
-        self._collision_timer = QTimer(self)
-        self._collision_timer.timeout.connect(self._collision.sweep)
-        self._collision_timer.start(2000)
+        self._pipeline.recorder_stats.connect(self._on_recorder_stats)
+        self._pipeline.ai_totals.connect(self._on_ai_totals)
+        self._pipeline.ai_model_missing.connect(
+            lambda: self._status_ai.setText("AI: no model"))
+        self._pipeline.event_extracted.connect(self._on_event_extracted)
 
         toolbar = self._build_toolbar()
         live_widget, self._tiles = self._build_grid(self._cameras, settings)
@@ -379,8 +324,8 @@ class MainWindow(QMainWindow):
             self._settings, telegram_bot_token=token, telegram_chat_id=chat_id,
             telegram_commands=commands, telegram_lang=lang,
         )
-        self._notifier.configure(token, chat_id, commands_enabled=commands,
-                                 lang=lang)
+        self._pipeline.configure_telegram(token, chat_id,
+                                          commands_enabled=commands, lang=lang)
         bus.info("APP", "Telegram settings updated")
 
     def _open_links_dialog(self) -> None:
@@ -390,7 +335,7 @@ class MainWindow(QMainWindow):
             return
         self._camera_links = dlg.values()
         camera_links.save(self._settings.env_path, self._camera_links)
-        self._collision.set_links(self._camera_links)
+        self._pipeline.set_links(self._camera_links)
         bus.info("LINK", f"camera links updated ({len(self._camera_links)} link(s))")
 
     def _open_detconf_dialog(self) -> None:
@@ -401,9 +346,7 @@ class MainWindow(QMainWindow):
         # Keep only the meaningful (capped) cameras; 0 means uncapped.
         self._person_floors = {c: f for c, f in dlg.values().items() if f > 0.0}
         detection_prefs.save(self._settings.env_path, self._person_floors)
-        self._live_detector.set_person_floor_by_cam(self._person_floors)
-        if getattr(self, "_analyzer", None) is not None:
-            self._analyzer.set_person_floor_by_cam(self._person_floors)
+        self._pipeline.set_person_floors(self._person_floors)
         capped = ", ".join(f"cam{c}={f:g}" for c, f in sorted(self._person_floors.items()))
         bus.info("CFG", f"detection floors updated ({capped or 'all uncapped'})")
 
@@ -418,7 +361,7 @@ class MainWindow(QMainWindow):
         }
         for tile, cam in zip(self._tiles, self._cameras):
             tile.set_display_name(self._cam_labels[cam.index])
-        self._notifier.set_cam_labels(self._cam_labels)
+        self._pipeline.set_cam_labels(self._cam_labels)
         bus.info("APP", "camera names updated")
 
     @Slot(int, str)
@@ -439,7 +382,7 @@ class MainWindow(QMainWindow):
         }
         for tile, c in zip(self._tiles, self._cameras):
             tile.set_display_name(self._cam_labels[c.index])
-        self._notifier.set_cam_labels(self._cam_labels)
+        self._pipeline.set_cam_labels(self._cam_labels)
         bus.info("APP", f"cam{cam_index} renamed -> {self._cam_labels[cam_index]}")
 
     def _set_mode(self, mode: str) -> None:
@@ -533,10 +476,10 @@ class MainWindow(QMainWindow):
             tile = CameraTile(cam, settings, default_stream, parent=wrap)
             tile.event_arm_toggled.connect(self._on_arm_toggled)
             tile.rename_committed.connect(self._on_tile_renamed)
-            # Feed live preview frames to the real-time alert tier (throttled in
-            # the tile to ~2 fps). Without this the LiveDetector gets no frames
-            # and never fires — the whole instant-alert path is dead.
-            tile.frame_tapped.connect(self._live_detector.submit)
+            # Feed live preview frames to the real-time alert tier (sampled in
+            # the stream worker at ~2 fps). Without this the LiveDetector gets
+            # no frames and never fires — the whole instant-alert path is dead.
+            tile.frame_tapped.connect(self._pipeline.live_detector.submit)
             tile.set_detect_region(self._detect_regions.get(cam.index, dr.DEFAULT))
             tile.detect_region_changed.connect(self._on_detect_region_changed)
             tiles.append(tile)
@@ -609,26 +552,8 @@ class MainWindow(QMainWindow):
         # Kick off DVR probe shortly after the window has painted, so the
         # log entries appear in the console if the user opens it.
         QTimer.singleShot(400, self._run_probe)
-        # Start the recorder a moment after the live streams so they don't
-        # race the DVR's connection cap.
-        if self._settings.recording_enabled:
-            QTimer.singleShot(1500, self._start_recorder)
-
-        # Watchdog (v0.4.69): prove we're alive via a heartbeat the sibling
-        # process watches, and keep that sibling running while enabled.
-        rec_dir = self._settings.recording_dir
-        watchdog.seed_default(rec_dir, self._settings.watchdog_enabled)
-        watchdog.touch_heartbeat(rec_dir)
-        self._hb_timer = QTimer(self)
-        self._hb_timer.timeout.connect(self._heartbeat_tick)
-        self._hb_timer.start(15_000)
-        watchdog.spawn_if_enabled(self._settings)
-
-    @Slot()
-    def _heartbeat_tick(self) -> None:
-        watchdog.touch_heartbeat(self._settings.recording_dir)
-        # Keep the sibling alive: re-spawn if it crashed while we're enabled.
-        watchdog.spawn_if_enabled(self._settings)
+        # Recorder, analyzer, watchdog heartbeat — all backend.
+        self._pipeline.start()
 
     @Slot(bool)
     def _toggle_watchdog(self, on: bool) -> None:
@@ -645,30 +570,14 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         # Tell the watchdog this is a deliberate quit so it doesn't relaunch us.
         watchdog.mark_shutdown(self._settings.recording_dir)
-        self._hb_timer.stop()
         self._ui_probe.stop()
         self._refresh_clock.stop()
         self._keep_timer.stop()
-        self._collision_timer.stop()
-        if self._analyzer is not None:
-            # Finalize held cross-segment events while the recorder's segments
-            # still exist on disk, then stop the worker and the recorder.
-            self._analyzer.flush_all()
-            self._analyzer.request_stop()
-            self._analyzer.wait(3000)
-        # Release any event still waiting for a cross-camera partner so its
-        # notification isn't lost (best-effort, before the notifier shuts down).
-        self._collision.flush_all()
-        if self._recorder is not None:
-            self._recorder.stop(wait_ms=5000)
+        # Tiles first (no more live frames), then the backend can stop.
         for tile in self._tiles:
             tile.shutdown(wait_ms=2000)
-        # Tiles are down (no more frame taps) -> the live tier can stop.
-        self._live_thread.quit()
-        self._live_thread.wait(2000)
+        self._pipeline.shutdown()
         self._playback_view.shutdown()
-        if self._notifier is not None:
-            self._notifier.shutdown()  # stop the Telegram reply listener thread
         if self._probe is not None and self._probe.isRunning():
             self._probe.wait(2000)
         if self._discovery is not None and self._discovery.isRunning():
@@ -746,54 +655,6 @@ class MainWindow(QMainWindow):
         persist_dvr_ip(self._settings, result.found_ip)
         record_ip_hit(self._settings.env_path, result.found_ip)
 
-    def _start_recorder(self) -> None:
-        if self._recorder is not None:
-            return
-        self._recorder = RecorderSupervisor(self._settings, self._cameras, parent=self)
-        self._recorder.stats_changed.connect(self._on_recorder_stats)
-        if self._settings.detection_enabled:
-            self._start_analyzer()
-            if self._analyzer is not None:
-                self._recorder.segment_closed.connect(self._analyzer.enqueue)
-        self._recorder.start()
-
-    def _start_analyzer(self) -> None:
-        if self._analyzer is not None:
-            return
-        model = self._settings.detection_model
-        if not model.is_file():
-            bus.warn("AI", f"model missing ({model}); detection disabled this session")
-            self._status_ai.setText("AI: no model")
-            return
-        event_cfg = EventConfig(
-            enabled=self._settings.event_extraction_enabled,
-            pre_roll_s=self._settings.event_pre_roll_s,
-            post_roll_s=self._settings.event_post_roll_s,
-            merge_gap_s=self._settings.event_merge_gap_s,
-            min_hits=self._settings.event_min_hits,
-        )
-        self._analyzer = SegmentAnalyzer(
-            model_path=model,
-            conf=self._settings.detection_conf,
-            person_conf=self._settings.detection_person_conf,
-            person_conf_by_cam=self._person_floors,
-            min_box_frac=self._settings.detection_min_box_frac,
-            sample_seconds=self._settings.detection_sample_seconds,
-            event_cfg=event_cfg,
-            events_dir=self._settings.events_dir,
-            recording_dir=self._settings.recording_dir,
-            cam_ids=[cam.index for cam in self._cameras],
-            armed=set(self._armed_cameras),
-            max_duration_s=self._settings.event_max_duration_s,
-            hold_timeout_s=self._settings.event_hold_timeout_s,
-            parent=self,
-        )
-        self._analyzer.set_regions(self._detect_regions)
-        self._analyzer.totals_changed.connect(self._on_ai_totals)
-        self._analyzer.event_extracted.connect(self._on_event_extracted)
-        self._analyzer.start()
-        self._status_ai.setText(self._ai_status_text(0, 0))
-
     def _ai_status_text(self, person_segments: int, vehicle_segments: int) -> str:
         n = len(self._armed_cameras)
         total = len(self._cameras)
@@ -805,9 +666,7 @@ class MainWindow(QMainWindow):
             self._armed_cameras.add(cam_index)
         else:
             self._armed_cameras.discard(cam_index)
-        if self._analyzer is not None:
-            self._analyzer.set_armed(set(self._armed_cameras))
-        self._live_detector.set_armed(set(self._armed_cameras))
+        self._pipeline.set_armed(self._armed_cameras)
 
     def _on_detect_region_changed(self, cam_index: int) -> None:
         tile = next((t for t in self._tiles if t._camera.index == cam_index), None)
@@ -815,51 +674,19 @@ class MainWindow(QMainWindow):
             return
         self._detect_regions[cam_index] = tile.detect_region()
         dr.save(self._settings.env_path, self._detect_regions)
-        self._live_detector.set_regions(self._detect_regions)
-        if self._analyzer is not None:
-            self._analyzer.set_regions(self._detect_regions)
+        self._pipeline.set_regions(self._detect_regions)
         bus.info("LIVE", f"cam{cam_index}: live detect zone updated")
         # refresh the armed count in the status bar without waiting for a scan
         self._status_ai.setText(self._ai_status_text(0, 0))
 
-    def _on_live_alert(self, cam_id: int, title: str, thumb_path: str) -> None:
-        label = self._cam_labels.get(cam_id, f"camera {cam_id}")
-        self._notifier.notify_live(cam_id, label, title, thumb_path)
-
-    def _on_quick_clip_ready(self, cam_id: int, folder: str) -> None:
-        # The ~30s quick clip finished encoding. It is NOT added to the Events
-        # gallery (that stays pure segment-tier: 4 cams, dynamic length). It's
-        # Telegram-only: reply to the alert photo to fetch it. Optionally
-        # auto-push it (off by default to save data).
-        if self._settings.live_autosend_clip:
-            label = self._cam_labels.get(cam_id, f"camera {cam_id}")
-            self._notifier.send_quick_clip(cam_id, label, folder)
-
     def _on_event_extracted(self, clip) -> None:
-        cams = "+".join(f"cam{c}" for c in clip.cams_captured) or "none"
-        bus.info(
-            "EVT",
-            f"event saved: cam{clip.cam_id} triggered {clip.start_at:%H:%M:%S} "
-            f"{clip.label}  ({cams})  -> {clip.folder}",
-        )
         # Immediately surface the new event in the playback Events gallery
         # (fast path past the 30s timer; also handles day rollover). Best-effort
-        # so a refresh hiccup can never break the notification below.
+        # so a refresh hiccup can never break the notification path behind it.
         try:
             self._playback_view.note_new_event(getattr(clip, "start_at", None))
         except Exception as e:  # pragma: no cover - defensive
             bus.warn("EVT", f"events-list live refresh failed: {e!s}")
-        # Route through the collision matcher: a crossing seen by two cameras is
-        # fused into one notification; everything else falls through to notify().
-        self._collision.feed(clip)
-
-    def _notify_single(self, clip) -> None:
-        """Normal per-camera push (matcher release / no link involved)."""
-        self._notifier.notify(clip, self._cam_labels.get(clip.cam_id))
-
-    def _on_collision(self, link, direction: str, from_clip, to_clip) -> None:
-        """One fused same-movement event: a single named album, two angles."""
-        self._notifier.notify_collision(link.name, direction, from_clip, to_clip)
 
     def _on_ai_totals(self, person_segments: int, vehicle_segments: int) -> None:
         self._status_ai.setText(self._ai_status_text(person_segments, vehicle_segments))
