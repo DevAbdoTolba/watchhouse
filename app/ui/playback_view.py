@@ -6,9 +6,8 @@ import time
 from datetime import date as _date, datetime, time as _time, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QDate, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
-    QAction,
     QColor,
     QDesktopServices,
     QFont,
@@ -19,18 +18,14 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QCheckBox,
-    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QFileDialog,
-    QListView,
-    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -42,38 +37,17 @@ from app.core.cameras import Camera
 from app.core.clip_library import Clip, clips_for_day, dates_with_clips, find_clip_at, scan
 from app.core.pins import Pins
 from app.core.config import Settings
-from app.core.event_library import (
-    EventRecord,
-    EventSession,
-    event_dates,
-    events_for_day,
-    group_sessions,
-)
+from app.core.event_library import EventRecord, EventSession
 from app.core.log import bus
 from app.core.playback_player import PlaybackPlayer
 from app.core.session_export import export_session
 from app.ui import theme
 from app.ui.camera_tile import VideoPanel
-from app.ui.events_model import EventsModel, ThumbnailLoader
-from app.ui.events_scan_worker import EventsScanWorker
+from app.ui.events_sidebar import EventsSidebar
 from app.ui.grid_focus import GridFocus
 from app.ui.import_clip_dialog import ImportClipDialog
 from app.ui.timeline_drawer import TimelineDrawer
 from app.ui.transport_bar import TransportBar
-
-
-class _StayOpenMenu(QMenu):
-    """A QMenu that stays open when a *checkable* action is clicked, so the user
-    can toggle several items (e.g. the camera filter) in one pass. A plain
-    QMenu dismisses on any trigger; here a checkable item toggles in place and
-    only a non-checkable item, Esc, or click-away closes it."""
-
-    def mouseReleaseEvent(self, event):  # noqa: N802 (Qt)
-        action = self.activeAction()
-        if action is not None and action.isEnabled() and action.isCheckable():
-            action.trigger()  # toggles + emits toggled(); menu stays visible
-            return
-        super().mouseReleaseEvent(event)
 
 
 class _SessionExportWorker(QObject):
@@ -328,38 +302,17 @@ class PlaybackView(QWidget):
         self._pins = Pins.load(settings.env_path)
         self._selected_cams: set[int] = {c.index for c in cameras}
         self._selected_day: _date = datetime.now().date()
-        # "Follow latest" keeps the Events list pinned to the newest day that
-        # has events so live detections appear without the user clicking the
-        # calendar. Set False once the user deliberately browses an older day
-        # (so we never yank them off history), back True when they return to
-        # the newest day. True at startup. See _on_date_changed / _on_events_scanned.
-        self._follow_latest_day: bool = True
         self._cursor: datetime = datetime.combine(self._selected_day, _time(0, 0))
         self._is_playing = False
         self._speed = 1.0  # mirror of the transport's speed, for the cursor estimate
         # Events sub-mode: "recordings" (timeline scrubbing) | "events" (gallery)
         self._mode = "recordings"
-        self._events: list[EventRecord] = []
-        self._day_events: list[EventRecord] = []
-        self._day_sessions: list[EventSession] = []
         self._current_event: EventRecord | None = None
-        self._current_session: EventSession | None = None
         # Background "Save full clip" export (one at a time).
         self._export_thread: QThread | None = None
         self._export_worker: _SessionExportWorker | None = None
-        # Background events scan (one at a time) feeds the in-memory list the
-        # model filters against; filters never touch disk.
-        self._scan_thread: QThread | None = None
-        self._scan_worker: EventsScanWorker | None = None
-        self._scan_rescan_pending = False
-        self._events_scanning = False  # drives the list's loading/end footer
-        self._all_sessions: list[EventSession] = []  # full, day-agnostic
-        self._thumb_loader = ThumbnailLoader(self)
         self._event_pos = 0.0  # clip-relative seconds, for stepping + label
         self._event_duration = 0.0  # trigger clip length (s); 0 until known
-        self._event_conf_min = 0.0  # min human-detection confidence to show (0..1)
-        self._event_cam_filter: set[int] = {c.index for c in cameras}  # trigger cams to show
-        self._cam_filter_actions: dict[int, QAction] = {}
         self._boxes_on = True  # draw detection boxes over event playback
 
         root = QHBoxLayout(self)
@@ -514,176 +467,19 @@ class PlaybackView(QWidget):
         v.addWidget(self._rec_section)
 
         # --- Events section (gallery of detected events) ---
-        self._events_section = QWidget(side)
-        ev = QVBoxLayout(self._events_section)
-        ev.setContentsMargins(0, 0, 0, 0)
-        ev.setSpacing(8)
-
-        self._events_heading = QLabel("EVENTS", self._events_section)
-        self._events_heading.setObjectName("SidebarHeading")
-        ev.addWidget(self._events_heading)
-
-        filt_row = QWidget(self._events_section)
-        fr = QHBoxLayout(filt_row)
-        fr.setContentsMargins(0, 0, 0, 0)
-        fr.setSpacing(6)
-        fr.addWidget(QLabel("MIN HUMAN", filt_row))
-        self._conf_combo = QComboBox(filt_row)
-        self._conf_combo.setObjectName("EventConfFilter")
-        for lbl, val in (("Any", 0.0), ("40%", 0.40), ("60%", 0.60),
-                         ("75%", 0.75), ("90%", 0.90)):
-            self._conf_combo.addItem(lbl, val)
-        self._conf_combo.currentIndexChanged.connect(self._on_conf_filter_changed)
-        fr.addWidget(self._conf_combo, 1)
-        fr.addWidget(QLabel("CAMERAS", filt_row))
-        fr.addWidget(self._build_camera_filter(filt_row), 1)
-        ev.addWidget(filt_row)
-
-        self._events_model = EventsModel(self._thumb_loader, self)
-        self._events_model.set_camera_labels(self._cam_name_map())
-        self._events_list = QListView(self._events_section)
-        self._events_list.setObjectName("EventsList")
-        self._events_list.setIconSize(QSize(112, 63))
-        self._events_list.setSpacing(3)
-        self._events_list.setUniformItemSizes(False)
-        self._events_list.setModel(self._events_model)
-        self._events_list.setSelectionMode(QListView.SelectionMode.SingleSelection)
-        self._events_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Virtualization fetches the next page as the view scrolls near bottom.
-        self._events_list.selectionModel().currentChanged.connect(
-            self._on_event_index_changed
-        )
-        # Quiet scroll-state feedback so the list never *looks* finished while
-        # there is more above/below or a scan is still running. A thin muted
-        # hint above (earlier events) and a footer below (more / loading / end).
-        hint_css = f"color:{theme.TEXT_MUTED}; font-size:11px; padding:1px;"
-        self._events_top_hint = QLabel("↑ earlier events above", self._events_section)
-        self._events_top_hint.setObjectName("EventsScrollHint")
-        self._events_top_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._events_top_hint.setStyleSheet(hint_css)
-        self._events_top_hint.setVisible(False)
-        ev.addWidget(self._events_top_hint)
-        ev.addWidget(self._events_list, 1)
-        self._events_status = QLabel("", self._events_section)
-        self._events_status.setObjectName("EventsScrollHint")
-        self._events_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._events_status.setStyleSheet(hint_css)
-        ev.addWidget(self._events_status)
-        sb = self._events_list.verticalScrollBar()
-        sb.valueChanged.connect(self._update_events_scroll_feedback)
-        sb.rangeChanged.connect(lambda *_: self._update_events_scroll_feedback())
-        self._events_model.modelReset.connect(self._update_events_scroll_feedback)
-        self._events_model.rowsInserted.connect(
-            lambda *_: self._update_events_scroll_feedback())
-
-        # Stitch the whole selected presence into one continuous file on demand.
-        self._save_full_btn = QPushButton("SAVE FULL CLIP", self._events_section)
-        self._save_full_btn.setObjectName("SidebarAction")
-        self._save_full_btn.setToolTip(
-            "Stitch every clip of the selected presence into one continuous "
-            "video (can be large)"
-        )
-        self._save_full_btn.setEnabled(False)
-        self._save_full_btn.clicked.connect(self._on_save_full_clip)
-        ev.addWidget(self._save_full_btn)
-
-        self._events_section.setVisible(False)
-        v.addWidget(self._events_section, 1)
+        self._events_sidebar = EventsSidebar(self._cameras, self._settings, side)
+        self._events_sidebar.session_activated.connect(self._on_session_activated)
+        self._events_sidebar.sessions_changed.connect(self._on_sessions_changed)
+        self._events_sidebar.day_jump_requested.connect(self._on_day_jump)
+        self._events_sidebar.save_full_requested.connect(self._on_save_full_clip)
+        self._events_sidebar.setVisible(False)
+        v.addWidget(self._events_sidebar, 1)
 
         v.addStretch(0)
         return side
 
     def _cam_display_name(self, cam: Camera, names: dict[int, str]) -> str:
         return camera_names.display_name(cam, names)
-
-    def _cam_name_map(self) -> dict[int, str]:
-        """trigger_cam -> display name, for the events model's row labels."""
-        names = camera_names.load(self._settings.env_path)
-        return {c.index: self._cam_display_name(c, names) for c in self._cameras}
-
-    def _build_camera_filter(self, parent: QWidget) -> QToolButton:
-        """Multi-select dropdown filtering events by their trigger camera."""
-        names = camera_names.load(self._settings.env_path)
-        btn = QToolButton(parent)
-        btn.setObjectName("EventCamFilter")
-        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        menu = _StayOpenMenu(btn)
-        menu.setStyleSheet(
-            """
-            QMenu {
-                background: #1f242e;
-                border: 1px solid #2a3040;
-                padding: 6px;
-            }
-            QMenu::item {
-                padding: 6px 14px;
-                border-radius: 4px;
-                color: #ebe7e1;
-            }
-            QMenu::item:selected {
-                background: #2a2017;
-                color: #c69561;
-            }
-            """
-        )
-
-        self._cam_filter_all = QAction("All", menu)
-        self._cam_filter_all.setCheckable(True)
-        self._cam_filter_all.setChecked(True)
-        self._cam_filter_all.toggled.connect(self._on_cam_filter_all)
-        menu.addAction(self._cam_filter_all)
-        menu.addSeparator()
-
-        for cam in self._cameras:
-            act = QAction(self._cam_display_name(cam, names), menu)
-            act.setCheckable(True)
-            act.setChecked(cam.index in self._event_cam_filter)
-            act.toggled.connect(lambda on, i=cam.index: self._on_cam_filter_toggled(i, on))
-            menu.addAction(act)
-            self._cam_filter_actions[cam.index] = act
-
-        btn.setMenu(menu)
-        self._cam_filter_btn = btn
-        self._sync_cam_filter_label()
-        return btn
-
-    def _sync_cam_filter_label(self) -> None:
-        names = camera_names.load(self._settings.env_path)
-        total = len(self._cameras)
-        n = len(self._event_cam_filter)
-        if n == total:
-            text = "All"
-        elif n == 1:
-            only = next(iter(self._event_cam_filter))
-            cam = next((c for c in self._cameras if c.index == only), None)
-            text = self._cam_display_name(cam, names) if cam else "1 cam"
-        else:
-            text = f"{n} cams"
-        self._cam_filter_btn.setText(text)
-        # Keep the "All" checkbox in sync without re-triggering its slot.
-        self._cam_filter_all.blockSignals(True)
-        self._cam_filter_all.setChecked(n == total)
-        self._cam_filter_all.blockSignals(False)
-
-    @Slot(bool)
-    def _on_cam_filter_all(self, on: bool) -> None:
-        self._event_cam_filter = {c.index for c in self._cameras} if on else set()
-        for idx, act in self._cam_filter_actions.items():
-            act.blockSignals(True)
-            act.setChecked(idx in self._event_cam_filter)
-            act.blockSignals(False)
-        self._sync_cam_filter_label()
-        self._apply_event_filters()
-
-    def _on_cam_filter_toggled(self, cam_id: int, on: bool) -> None:
-        if on:
-            self._event_cam_filter.add(cam_id)
-        else:
-            self._event_cam_filter.discard(cam_id)
-        self._sync_cam_filter_label()
-        self._apply_event_filters()
 
     @Slot()
     def _on_import_clip(self) -> None:
@@ -716,7 +512,7 @@ class PlaybackView(QWidget):
         for key, btn in self._mode_btns.items():
             btn.setChecked(key == mode)
         self._rec_section.setVisible(mode == "recordings")
-        self._events_section.setVisible(mode == "events")
+        self._events_sidebar.setVisible(mode == "events")
         self._timeline.setVisible(mode == "recordings")
         # Scrub bar is the events-mode scrubber; recordings use the timeline.
         self._transport.set_scrub_visible(mode == "events")
@@ -735,73 +531,37 @@ class PlaybackView(QWidget):
                 t.set_overlay(None)
         self._highlight_calendar_dates()
         if mode == "events":
-            self._current_session = None
+            self._events_sidebar.reset_selection()
             self._current_event = None
-            self._save_full_btn.setEnabled(False)
             self._reset_scrub()
-            self.refresh_events()
+            self._events_sidebar.refresh()
             for t in self._tiles:
                 t.load_path(None)
             self._transport.set_cursor_text("Select an event")
         else:
             # Entering recordings mode: make sure the timeline's green/blue
             # layers reflect the currently selected day (not a stale one).
-            self._apply_event_filters()
+            self._events_sidebar.set_day(self._selected_day)
             self._load_all_at_cursor()
 
-    def refresh_events(self) -> None:
-        """Kick off a background scan of the events tree. The scan reads every
-        event.json (slow), so it runs on a worker thread; the model/UI consume
-        the already-built session list on completion. Overlapping scans are
-        coalesced into a single trailing rescan."""
-        self._events_scanning = True
-        self._update_events_scroll_feedback()
-        if self._scan_thread is not None:
-            self._scan_rescan_pending = True
-            return
-        thread = QThread(self)
-        worker = EventsScanWorker(self._settings.events_dir)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._on_events_scanned)
-        worker.finished.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        self._scan_thread = thread
-        self._scan_worker = worker
-        thread.start()
-
-    @Slot(list, list)
-    def _on_events_scanned(self, events: list, sessions: list) -> None:
-        self._scan_thread = None
-        self._scan_worker = None
-        self._events_scanning = False
-        self._events = events
-        self._all_sessions = sessions
-        # Day-rollover safety: while following the latest day, advance the
-        # selection to the newest day that actually has events (e.g. a brand
-        # new event after midnight lands under tomorrow's folder). Skipped when
-        # the user is browsing history, so we never interrupt them.
-        self._maybe_follow_latest_day()
+    @Slot(object)
+    def _on_day_jump(self, day: _date) -> None:
+        """Follow-latest (or a fresh post-midnight event) wants the selection
+        on a newer day: move the calendar + timeline, then re-filter."""
+        self._set_selected_day(day)
+        self._events_sidebar.set_day(day)
         self._highlight_calendar_dates()
-        self._apply_event_filters()
-        if self._scan_rescan_pending:
-            self._scan_rescan_pending = False
-            self.refresh_events()
 
-    def _maybe_follow_latest_day(self) -> None:
-        """If in follow-latest mode and the scan revealed events on a day newer
-        than the current selection, move the selection (and the calendar) to
-        that newest day so live detections always surface. No-op when browsing
-        history (`_follow_latest_day` is False)."""
-        if not self._follow_latest_day:
-            return
-        days = event_dates(self._events)
-        if not days:
-            return
-        newest = max(days)
-        if newest > self._selected_day:
-            self._set_selected_day(newest)
+    @Slot(list)
+    def _on_sessions_changed(self, sessions: list) -> None:
+        """The sidebar re-filtered: refresh the timeline's green (events) and
+        blue (pinned/kept) layers and the calendar's bold day markers."""
+        spans: dict[int, list] = {}
+        for s in sessions:
+            spans.setdefault(s.trigger_cam, []).append((s.start_at, s.end_at))
+        self._timeline.set_events(spans)
+        self._timeline.set_pinned(self._pinned_spans_by_cam())
+        self._highlight_calendar_dates()
 
     def _set_selected_day(self, day: _date) -> None:
         """Point the selection + calendar at `day` without re-entering
@@ -813,52 +573,10 @@ class PlaybackView(QWidget):
         self._calendar.blockSignals(False)
 
     def note_new_event(self, when: datetime | None = None) -> None:
-        """Fast path: a new event was just extracted. Trigger an immediate
-        (threaded) rescan so it appears within ~1s instead of waiting on the
-        30s timer, and — when following the latest day — jump the selection to
-        the new event's day so a post-midnight event is visible without a
-        restart. Called best-effort from MainWindow._on_event_extracted."""
-        if (when is not None and self._follow_latest_day
-                and when.date() > self._selected_day):
-            self._set_selected_day(when.date())
-            self._highlight_calendar_dates()
-            self._apply_event_filters()
-        self.refresh_events()
-
-    def _apply_event_filters(self) -> None:
-        """Re-filter the in-memory session list (day + camera + confidence) and
-        reset the model window to the first page. No disk access — only
-        refresh_events re-scans. Selection is preserved by session_id."""
-        prev_sid = self._current_session.session_id if self._current_session else None
-        day_sessions = group_sessions(events_for_day(self._events, self._selected_day))
-        self._day_sessions = [
-            s for s in day_sessions
-            if s.trigger_cam in self._event_cam_filter
-            and any(m.person_conf >= self._event_conf_min for m in s.members)
-        ]
-        # Keep a flat per-event view for any legacy callers / position stepping.
-        self._day_events = [m for s in self._day_sessions for m in s.members]
-        self._events_model.set_camera_labels(self._cam_name_map())
-        self._events_model.set_sessions(self._day_sessions)
-        n = len(self._day_sessions)
-        self._events_heading.setText(f"EVENTS — {self._selected_day:%b %d}  ({n})")
-        if prev_sid is not None:
-            for row, s in enumerate(self._day_sessions):
-                if s.session_id == prev_sid:
-                    self._select_event_row(row)
-                    break
-        # Green layer (events available) + blue layer (pinned/kept) on timeline.
-        self._timeline.set_events(self._event_spans_by_cam())
-        self._timeline.set_pinned(self._pinned_spans_by_cam())
-        self._update_events_scroll_feedback()
-
-    def _event_spans_by_cam(self) -> dict:
-        """(start, end) spans per trigger camera for the current day's event
-        sessions — drives the timeline's green 'event available' layer."""
-        out: dict[int, list] = {}
-        for s in getattr(self, "_day_sessions", []):
-            out.setdefault(s.trigger_cam, []).append((s.start_at, s.end_at))
-        return out
+        """Fast path: a new event was just extracted — surface it within ~1s.
+        Called best-effort from MainWindow; the sidebar owns the rescan and
+        the follow-latest day-jump policy."""
+        self._events_sidebar.note_new_event(when)
 
     def _pinned_spans_by_cam(self) -> dict:
         return footage_spans.pinned_spans_by_cam(
@@ -899,54 +617,10 @@ class PlaybackView(QWidget):
         self._pin_status.setText(
             (f"🔒 {n} locked range(s)" if n else "nothing locked") + keeping)
 
-    def _update_events_scroll_feedback(self) -> None:
-        """Keep the list's quiet header/footer hints in sync with scroll state:
-        loading during a scan, '↓ more below' / '↑ earlier above' while there's
-        off-screen content, and a settled '— end · N events —' when caught up."""
-        status = getattr(self, "_events_status", None)
-        if status is None:
-            return
-        if getattr(self, "_events_scanning", False):
-            status.setText("Loading…")
-            self._events_top_hint.setVisible(False)
-            return
-        total = self._events_model.total_count()
-        if total == 0:
-            status.setText("")
-            self._events_top_hint.setVisible(False)
-            return
-        sb = self._events_list.verticalScrollBar()
-        more_below = self._events_model.canFetchMore() or sb.value() < sb.maximum()
-        if more_below:
-            status.setText("↓ more below")
-        else:
-            status.setText(f"— end · {total} event{'s' if total != 1 else ''} —")
-        self._events_top_hint.setVisible(sb.value() > 0)
-
-    def _select_event_row(self, row: int) -> None:
-        """Highlight a row without restarting playback (guarded selection)."""
-        if row < 0 or row >= self._events_model.total_count():
-            return
-        # Ensure the row is within the revealed window so it can be selected.
-        while self._events_model.rowCount() <= row and self._events_model.canFetchMore():
-            self._events_model.fetchMore()
-        idx = self._events_model.index(row, 0)
-        sel = self._events_list.selectionModel()
-        sel.blockSignals(True)
-        self._events_list.setCurrentIndex(idx)
-        sel.blockSignals(False)
-
-    def _on_event_index_changed(self, current, _previous) -> None:
-        session = self._events_model.session_at(current)
-        if session is None:
-            return
-        # Re-selecting the already-current session (e.g. when a refresh
-        # restores the highlight) must not restart playback from 0.
-        if (self._current_session is not None
-                and session.session_id == self._current_session.session_id):
-            return
-        self._current_session = session
-        self._save_full_btn.setEnabled(self._export_thread is None)
+    @Slot(object)
+    def _on_session_activated(self, session) -> None:
+        """The user picked a session in the sidebar: play its first member."""
+        self._events_sidebar.set_save_enabled(self._export_thread is None)
         ev = session.members[0]  # selecting a session plays its first member
         self._current_event = ev
         self._event_pos = 0.0
@@ -974,7 +648,7 @@ class PlaybackView(QWidget):
 
     @Slot()
     def _on_save_full_clip(self) -> None:
-        session = self._current_session
+        session = self._events_sidebar.current_session()
         if session is None or self._export_thread is not None:
             return
         names = camera_names.load(self._settings.env_path)
@@ -990,8 +664,7 @@ class PlaybackView(QWidget):
             return
         out_path = Path(out)
 
-        self._save_full_btn.setEnabled(False)
-        self._save_full_btn.setText("SAVING…")
+        self._events_sidebar.set_save_busy(True)
         bus.info(
             "EVT",
             f"save-full-clip: exporting {session.count} clips "
@@ -1014,8 +687,7 @@ class PlaybackView(QWidget):
     def _on_export_done(self, ok: bool, out_path: str) -> None:
         self._export_thread = None
         self._export_worker = None
-        self._save_full_btn.setText("SAVE FULL CLIP")
-        self._save_full_btn.setEnabled(self._current_session is not None)
+        self._events_sidebar.set_save_busy(False)
         if ok:
             detail = out_path
             try:
@@ -1067,11 +739,6 @@ class PlaybackView(QWidget):
                 self._boxes_on and is_trigger and ev is not None and bool(ev.tracks)
             )
 
-    @Slot(int)
-    def _on_conf_filter_changed(self, _index: int) -> None:
-        self._event_conf_min = float(self._conf_combo.currentData() or 0.0)
-        self._apply_event_filters()
-
     def _periodic_refresh(self) -> None:
         # The library scan walks the whole recordings tree on the UI thread;
         # don't pay for it while the playback view is hidden (live mode).
@@ -1080,7 +747,7 @@ class PlaybackView(QWidget):
             return
         self.refresh_library()
         if self._mode == "events":
-            self.refresh_events()
+            self._events_sidebar.refresh()
 
     def _build_grid(self) -> tuple[QWidget, list[PlaybackTile]]:
         wrap = QWidget(self)
@@ -1159,7 +826,7 @@ class PlaybackView(QWidget):
         default_fmt = QTextCharFormat()
         self._calendar.setDateTextFormat(QDate(), default_fmt)
         if self._mode == "events":
-            days = event_dates(self._events)
+            days = self._events_sidebar.event_days()
         else:
             days = dates_with_clips(self._library)
         hl_fmt = QTextCharFormat()
@@ -1174,15 +841,10 @@ class PlaybackView(QWidget):
         qd = self._calendar.selectedDate()
         self._selected_day = _date(qd.year(), qd.month(), qd.day())
         self._timeline.set_day(self._selected_day)
-        # Resume following the latest day only if the user landed on the newest
-        # day that has events (or there are none yet); picking an older day means
-        # they chose to browse history, so stop auto-advancing on them.
-        days = event_dates(self._events)
-        self._follow_latest_day = (not days) or (self._selected_day >= max(days))
-        # Refresh the green (events) + blue (pinned) timeline layers for the new
-        # day in BOTH modes. Recordings mode used to skip this, so the green
-        # markers stayed stuck on the startup day and older days looked empty.
-        self._apply_event_filters()
+        # The sidebar owns the follow-latest decision and re-filters for the
+        # new day in BOTH modes (its sessions_changed refreshes the green +
+        # blue timeline layers, which recordings mode shows too).
+        self._events_sidebar.user_selected_day(self._selected_day)
         if self._mode == "events":
             return
         # Jump cursor to the start of the earliest clip that day (if any)
@@ -1385,9 +1047,6 @@ class PlaybackView(QWidget):
     def shutdown(self) -> None:
         self._refresh_timer.stop()
         self._cursor_tick.stop()
-        self._scan_rescan_pending = False
-        if self._scan_thread is not None:
-            self._scan_thread.quit()
-            self._scan_thread.wait(1500)
+        self._events_sidebar.shutdown()
         for t in self._tiles:
             t.shutdown(wait_ms=1500)
